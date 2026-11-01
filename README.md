@@ -2,6 +2,9 @@
 
 **Share part or all of your screen**
 
+Home displays the actual installed package version name and build code, not a
+hardcoded development version or a remotely checked release.
+
 Independent Android 11+ app (`dev.screencopy.partialcast`) for **local GPU
 projection** to a public secondary presentation display. It is not ScrcpySend
 or ScrcpyRecv and does not interact with either app.
@@ -135,7 +138,7 @@ Published assets are only `PartialCast.apk` and `SHA256SUMS`; notices are bundle
 inside the APK. Existing public release assets are never overwritten.
 Release versionName comes from the tag; versionCode is `10000 +` this workflow's
 run number, so preserve the workflow identity/version-code lineage. The default
-development version is `0.1.0` / code 1. Local permanent signing uses
+development version is `0.1.1` / code 1. Local permanent signing uses
 `ANDROID_KEYSTORE_PATH` plus the three alias/password variables and
 `-PrequireReleaseSigning=true`; do not expose these values on command lines.
 The permanent-signer APK cannot in-place update an unrelated debug signer.
@@ -193,7 +196,7 @@ Platform test APKs are compiled only. These results do not include connected
 capture tests or emulator acceptance. Separately authorized app deployment/UI
 checks do not validate the HDMI/EGL capture pipeline.
 
-Local Windows ARM64 SDK 37 validation: **64 JVM tests passed, zero failures/errors**;
+Local Windows ARM64 SDK 37 validation: **67 JVM tests passed, zero failures/errors**;
 `lintDebug` passed with zero errors (25 non-blocking lint warnings).
 All five tasks in the command above passed, including optimized unsigned release
 assembly. SDK 33 reproduces frozen portrait Activity metrics while the fresh

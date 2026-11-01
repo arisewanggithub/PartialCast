@@ -73,11 +73,11 @@ try {
         throw 'PKCS12 conversion changed the signing certificate'
     }
     & (Join-Path $PSScriptRoot 'verify-apk.ps1') -Apk $signed -BuildTools $BuildTools -Signing Signed `
-        -VersionCode 10001 -ExpectedCertificateSha256 $fingerprint
+        -VersionCode 10001 -VersionName '0.1.0' -ExpectedCertificateSha256 $fingerprint
     $rejected = $false
     try {
         & (Join-Path $PSScriptRoot 'verify-apk.ps1') -Apk $signed -BuildTools $BuildTools -Signing Signed `
-            -VersionCode 10001 -ExpectedCertificateSha256 ('0' * 64)
+            -VersionCode 10001 -VersionName '0.1.0' -ExpectedCertificateSha256 ('0' * 64)
     } catch {
         if ($_.Exception.Message -ne 'Permanent release signer mismatch') { throw }
         $rejected = $true

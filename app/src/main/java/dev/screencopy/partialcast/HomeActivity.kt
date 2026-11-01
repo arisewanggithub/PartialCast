@@ -88,6 +88,11 @@ class HomeActivity : Activity() {
         }
         root.addView(TextView(this).apply { setText(R.string.app_name); textSize = 30f })
         root.addView(TextView(this).apply { setText(R.string.subtitle); textSize = 18f })
+        root.addView(TextView(this).apply {
+            tag = "app-version"
+            text = installedVersionLabel()
+            textSize = 14f
+        })
         cropSummary = TextView(this).also(root::addView)
         edit = Button(this).apply { text = "Edit crop"; setOnClickListener { editCrop() } }.also(root::addView)
         root.addView(TextView(this).apply { text = "Presentation display" })
@@ -117,6 +122,22 @@ class HomeActivity : Activity() {
         } catch (e: IllegalArgumentException) {
             report("Saved crop is invalid: ${e.message}. Edit it before Play.")
         }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun installedVersionLabel(): String {
+        val installed = try {
+            packageManager.getPackageInfo(packageName, 0)
+        } catch (e: PackageManager.NameNotFoundException) {
+            Log.e("PartialCast", "Could not read installed package version", e)
+            return getString(R.string.version_unavailable)
+        }
+        val name = installed.versionName
+        if (name.isNullOrBlank() || installed.longVersionCode <= 0) {
+            Log.e("PartialCast", "Installed package version metadata is missing or invalid")
+            return getString(R.string.version_unavailable)
+        }
+        return getString(R.string.app_version, name, installed.longVersionCode)
     }
 
     private fun editCrop() {

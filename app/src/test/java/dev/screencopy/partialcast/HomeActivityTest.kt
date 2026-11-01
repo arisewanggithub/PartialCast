@@ -3,6 +3,7 @@ package dev.screencopy.partialcast
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.os.Looper
@@ -50,6 +51,9 @@ class HomeActivityTest {
     }
     private fun summary(activity: HomeActivity) =
         ReflectionHelpers.getField<TextView>(activity, "cropSummary").text.toString()
+
+    private fun version(activity: HomeActivity) =
+        activity.window.decorView.findViewWithTag<TextView>("app-version").text.toString()
 
     private fun saveWholeScreenThroughEditor(activity: HomeActivity) {
         ReflectionHelpers.getField<Button>(activity, "edit").performClick()
@@ -107,6 +111,33 @@ class HomeActivityTest {
         assertSame(session, state.active)
         assertNull(shadowOf(controller.get()).nextStartedActivityForResult)
         assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
+    }
+    @Suppress("DEPRECATION")
+    @Test fun homeDisplaysActualInstalledVersionNameAndLongBuildCode() {
+        val activity = controller.get()
+        val installed = activity.packageManager.getPackageInfo(activity.packageName, 0)
+        assertEquals(activity.getString(R.string.app_version, installed.versionName, installed.longVersionCode), version(activity))
+    }
+    @Suppress("DEPRECATION")
+    @Test fun homeUsesReleaseMetadataRatherThanHardcodedDevelopmentVersion() {
+        val context = RuntimeEnvironment.getApplication()
+        val installed = context.packageManager.getPackageInfo(context.packageName, 0)
+        installed.versionName = "0.1.1"
+        installed.longVersionCode = 10005
+        shadowOf(context.packageManager).installPackage(installed)
+        val release = anotherHome()
+        try { assertEquals("Version 0.1.1 (build 10005)", version(release.get())) }
+        finally { release.pause().stop().destroy() }
+    }
+    @Suppress("DEPRECATION")
+    @Test fun missingPackageVersionIsExplicitlyUnavailableNotAFalseDefault() {
+        val context = RuntimeEnvironment.getApplication()
+        val installed = context.packageManager.getPackageInfo(context.packageName, 0)
+        installed.versionName = null
+        shadowOf(context.packageManager).installPackage(installed)
+        val missing = anotherHome()
+        try { assertEquals("Version unavailable", version(missing.get())) }
+        finally { missing.pause().stop().destroy() }
     }
     @Test fun backgroundDenialReturnsToIdle() {
         controller.pause().stop()
