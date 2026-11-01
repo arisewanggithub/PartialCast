@@ -8,4 +8,11 @@
     <string name="update_later">Later</string>
     <string name="update_open">Upgrade</string>
     <string name="update_browser_unavailable">The release page could not be opened. Install or enable a browser, then try again or choose Later.</string>
+    <string name="crop_natural_resolution">Natural phone resolution: %1$d × %2$d px</string>
+    <string name="crop_sketch_legend">Natural orientation · schematic, not a screenshot\nGray outline: phone · Teal outline/shading: shared area</string>
+    <string name="crop_effective_preview">Clipped shared area: %1$d × %2$d px at (%3$d, %4$d). Output follows phone rotation.</string>
+    <string name="crop_sketch_description">Phone %1$d by %2$d pixels; shared area %3$d by %4$d pixels at X %5$d, Y %6$d in natural orientation.</string>
+    <string name="crop_invalid_preview">Invalid crop: no shared area preview.</string>
+    <string name="crop_preview_unavailable">Crop preview is unavailable.</string>
+    <string name="crop_resolution_unavailable">Natural phone resolution is unavailable.</string>
 </resources>

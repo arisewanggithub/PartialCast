@@ -85,6 +85,15 @@ Home observes the four shared preference keys and refreshes on resume, keeping
 returning and simultaneously visible controls consistent with the next Play.
 Observers are removed at Activity destruction and ignore late notifications.
 
+The crop editor queries live default-display geometry and expresses its
+resolution/preview in natural orientation. A non-interactive Canvas schematic
+uses gray phone and teal clipped-crop outlines/shading, never screen pixels.
+Input watchers validate drafts for display without saving or rewriting them;
+display/configuration callbacks refresh geometry. Dismissal/destruction removes
+watchers and display listeners. Save still validates current phone bounds
+through the existing store. The schematic predicts the selected region, not
+content, HDMI pixels, output bars or measured hardware results.
+
 Capture geometry clips in natural coordinates with overflow-safe arithmetic,
 rotates the rectangle, and preserves a full-resolution source buffer (one pixel
 is never turned into a subpixel crop). Invalid fractional/overflow editor input

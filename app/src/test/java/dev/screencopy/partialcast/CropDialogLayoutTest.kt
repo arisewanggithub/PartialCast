@@ -2,6 +2,7 @@ package dev.screencopy.partialcast
 
 import android.app.AlertDialog
 import android.hardware.display.DisplayManager
+import android.content.res.Configuration
 import android.os.Looper
 import android.view.Display
 import android.view.View
@@ -29,6 +30,7 @@ import org.robolectric.annotation.GraphicsMode
 import org.robolectric.annotation.LooperMode
 import org.robolectric.shadows.ShadowAlertDialog
 import org.robolectric.util.ReflectionHelpers
+import org.robolectric.shadows.ShadowDisplayManager
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
@@ -123,5 +125,57 @@ class CropDialogLayoutTest {
         shadowOf(Looper.getMainLooper()).idle()
         assertFalse(dialog.isShowing)
         assertEquals(CropSettings(0, 0, 0, 0), CropStore(controller.get()).load())
+    }
+    private fun preview() = root.findViewWithTag<TextView>("crop-preview").text.toString()
+    private fun resolution() = root.findViewWithTag<TextView>("crop-resolution").text.toString()
+    @Test fun initialPreviewUsesLiveNaturalResolutionAndFullScreenForAllZero() {
+        val snapshot = PhoneGeometry(controller.get()).read()
+        val natural = snapshot.naturalSize
+        assertEquals(controller.get().getString(R.string.crop_natural_resolution, natural.width, natural.height), resolution())
+        assertEquals(controller.get().getString(R.string.crop_effective_preview, natural.width, natural.height, 0, 0), preview())
+        assertTrue(root.findViewWithTag<CropSketchView>("crop-sketch").contentDescription.toString().contains("natural orientation"))
+    }
+    @Test fun typingClipsPreviewWithoutRewritingOrSavingAndInvalidOriginClearsSelection() {
+        val natural = PhoneGeometry(controller.get()).read().naturalSize
+        fields[0].setText(Int.MAX_VALUE.toString())
+        fields[1].setText(Int.MAX_VALUE.toString())
+        fields[2].setText((natural.width - 10).toString())
+        fields[3].setText((natural.height - 20).toString())
+        assertEquals(controller.get().getString(R.string.crop_effective_preview, 10, 20, natural.width - 10, natural.height - 20), preview())
+        assertEquals(Int.MAX_VALUE.toString(), fields[0].text.toString())
+        assertEquals(CropSettings(0, 0, 0, 0), CropStore(controller.get()).load())
+        fields[2].setText(natural.width.toString())
+        assertEquals(controller.get().getString(R.string.crop_invalid_preview), preview())
+        val error = root.getChildAt(root.childCount - 1) as TextView
+        assertEquals(View.VISIBLE, error.visibility)
+        assertTrue(error.text.toString().contains("outside"))
+        fields[2].setText("0")
+        assertEquals(View.GONE, error.visibility)
+    }
+    @Test fun defaultDisplayChangeUpdatesNaturalResolutionInTheOpenDialog() {
+        RuntimeEnvironment.setQualifiers("w600dp-h1000dp-port-mdpi")
+        ShadowDisplayManager.changeDisplay(Display.DEFAULT_DISPLAY, "w600dp-h1000dp-port-mdpi")
+        shadowOf(Looper.getMainLooper()).idle()
+        controller.get().onConfigurationChanged(Configuration(RuntimeEnvironment.getApplication().resources.configuration))
+        val natural = PhoneGeometry(controller.get()).read().naturalSize
+        assertEquals(controller.get().getString(R.string.crop_natural_resolution, natural.width, natural.height), resolution())
+        assertEquals(controller.get().getString(R.string.crop_effective_preview, natural.width, natural.height, 0, 0), preview())
+    }
+    @Test fun invalidTemporaryTextHasExplicitPreviewErrorAndDoesNotRewriteFields() {
+        fields[0].setText("1.5")
+        assertEquals("1.5", fields[0].text.toString())
+        assertEquals(controller.get().getString(R.string.crop_invalid_preview), preview())
+        fields[0].setText("")
+        assertEquals("", fields[0].text.toString())
+        assertEquals(controller.get().getString(R.string.crop_invalid_preview), preview())
+    }
+    @Test fun dismissedEditorRemovesPreviewCallbacksAndDoesNotReactToLateDraftChanges() {
+        val before = preview()
+        dialog.dismiss()
+        shadowOf(Looper.getMainLooper()).idle()
+        fields[0].setText("")
+        assertEquals(before, preview())
+        assertNull(ReflectionHelpers.getField<Any?>(controller.get(), "refreshCropPhone"))
+        assertNull(ReflectionHelpers.getField<Any?>(controller.get(), "cropDialog"))
     }
 }

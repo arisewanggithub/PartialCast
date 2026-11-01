@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$BuildTools,
     [ValidateSet('Unsigned', 'Signed')][string]$Signing = 'Unsigned',
     [long]$VersionCode = 1,
-    [string]$VersionName = '0.1.2',
+    [string]$VersionName = '0.1.3',
     [string]$ExpectedCertificateSha256 = '',
     [string]$DebugApk = '',
     [string]$OutputDirectory = ''

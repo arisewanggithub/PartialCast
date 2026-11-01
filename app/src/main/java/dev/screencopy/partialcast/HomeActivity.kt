@@ -6,10 +6,14 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.ActivityNotFoundException
+import android.content.res.Configuration
 import android.net.Uri
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
+import android.hardware.display.DisplayManager
+import android.text.Editable
+import android.text.TextWatcher
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
@@ -51,6 +55,8 @@ class HomeActivity : Activity() {
     private var targets: List<LocalDisplayTarget> = emptyList()
     private lateinit var updateCheck: LaunchUpdateCheck
     private var updateDialog: AlertDialog? = null
+    private var cropDialog: AlertDialog? = null
+    private var refreshCropPhone: (() -> Unit)? = null
     private val observer: () -> Unit = {
         if (targets != state.targets) {
             val selected = targets.getOrNull(displays.selectedItemPosition)?.id
@@ -180,6 +186,15 @@ class HomeActivity : Activity() {
                 "Otherwise width/height must be positive and X/Y nonnegative. Edges are clipped."
             setPadding(0, 0, 0, spacing)
         })
+        val resolution = TextView(this).apply { tag = "crop-resolution" }.also(root::addView)
+        root.addView(TextView(this).apply { setText(R.string.crop_sketch_legend) })
+        val sketch = CropSketchView(this).apply { tag = "crop-sketch" }
+        root.addView(sketch, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, (160 * unit).toInt()))
+        val preview = TextView(this).apply {
+            tag = "crop-preview"
+            setPadding(0, 0, 0, spacing)
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }.also(root::addView)
         val fields = listOf("Width" to saved.width, "Height" to saved.height, "X" to saved.x, "Y" to saved.y).mapIndexed { index, (name, value) ->
             val row = LinearLayout(this).apply {
                 orientation = LinearLayout.HORIZONTAL
@@ -204,9 +219,78 @@ class HomeActivity : Activity() {
         }.also(root::addView)
         val dialog = AlertDialog.Builder(this).setTitle("Crop").setView(scroll)
             .setNegativeButton("Cancel", null).setPositiveButton("Save", null).create()
+        cropDialog = dialog
         dialog.window?.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE or
             WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN)
+        var snapshot: PhoneSnapshot? = null
+        fun updatePreview() {
+            val current = snapshot
+            if (current == null) {
+                sketch.show(null, null)
+                preview.setText(R.string.crop_preview_unavailable)
+                sketch.contentDescription = getString(R.string.crop_preview_unavailable)
+                return
+            }
+            try {
+                val value = CropSettings.parse(fields.map { it.text.toString() })
+                val natural = current.naturalSize
+                val selected = value.validate(PhoneSnapshot(natural, 0, current.density)).crop
+                sketch.show(natural, selected)
+                preview.text = getString(R.string.crop_effective_preview, selected.width, selected.height, selected.x, selected.y)
+                sketch.contentDescription = getString(R.string.crop_sketch_description, natural.width, natural.height,
+                    selected.width, selected.height, selected.x, selected.y)
+                error.visibility = View.GONE
+            } catch (e: IllegalArgumentException) {
+                sketch.show(current.naturalSize, null)
+                preview.setText(R.string.crop_invalid_preview)
+                sketch.contentDescription = getString(R.string.crop_invalid_preview)
+                error.text = e.message
+                error.visibility = View.VISIBLE
+            }
+        }
+        fun refreshPhone() {
+            try {
+                snapshot = phone.read()
+                val natural = checkNotNull(snapshot).naturalSize
+                resolution.text = getString(R.string.crop_natural_resolution, natural.width, natural.height)
+                updatePreview()
+            } catch (e: IllegalStateException) {
+                Log.e("PartialCast", "Crop preview phone geometry unavailable", e)
+                snapshot = null
+                resolution.setText(R.string.crop_resolution_unavailable)
+                error.text = e.message
+                error.visibility = View.VISIBLE
+                updatePreview()
+            }
+        }
+        refreshCropPhone = ::refreshPhone
+        val watcher = object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, start: Int, count: Int, after: Int) = Unit
+            override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) = Unit
+            override fun afterTextChanged(s: Editable?) = updatePreview()
+        }
+        fields.forEach { it.addTextChangedListener(watcher) }
+        val manager = getSystemService(DisplayManager::class.java)
+        val phoneListener = object : DisplayManager.DisplayListener {
+            override fun onDisplayAdded(displayId: Int) = Unit
+            override fun onDisplayRemoved(displayId: Int) {
+                if (cropDialog === dialog && displayId == Display.DEFAULT_DISPLAY) refreshPhone()
+            }
+            override fun onDisplayChanged(displayId: Int) {
+                if (cropDialog === dialog && displayId == Display.DEFAULT_DISPLAY) refreshPhone()
+            }
+        }
+        dialog.setOnDismissListener {
+            manager.unregisterDisplayListener(phoneListener)
+            fields.forEach { it.removeTextChangedListener(watcher) }
+            if (cropDialog === dialog) {
+                cropDialog = null
+                refreshCropPhone = null
+            }
+        }
         dialog.setOnShowListener {
+            manager.registerDisplayListener(phoneListener, android.os.Handler(mainLooper))
+            refreshPhone()
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
                 try {
                     check(state.active == null) { "Stop capture before editing" }
@@ -312,6 +396,10 @@ class HomeActivity : Activity() {
         showUpdateIfIdle()
     }
     override fun onPause() { resumed = false; super.onPause() }
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        refreshCropPhone?.invoke()
+    }
     override fun onStop() {
         state.active?.let { Log.i("PartialCast", "host_hidden phase=${it.phase} action=keep_session") }
         super.onStop()
@@ -325,6 +413,8 @@ class HomeActivity : Activity() {
         finish()
     }
     override fun onDestroy() {
+        cropDialog?.dismiss()
+        cropDialog = null
         if (::updateCheck.isInitialized) {
             updateCheck.detach()
             if (!isChangingConfigurations) updateCheck.close()

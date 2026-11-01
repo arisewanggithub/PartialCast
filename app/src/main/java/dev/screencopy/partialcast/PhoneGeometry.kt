@@ -8,7 +8,9 @@ import android.util.DisplayMetrics
 import android.view.Display
 import android.view.WindowManager
 
-internal data class PhoneSnapshot(val size: VideoSize, val rotation: Int, val density: Int)
+internal data class PhoneSnapshot(val size: VideoSize, val rotation: Int, val density: Int) {
+    val naturalSize get() = if (rotation % 2 == 0) size else size.rotated()
+}
 
 /** No Activity resources/window metrics: each read uses a fresh default-display context. */
 internal class PhoneGeometry(context: Context) {

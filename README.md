@@ -31,6 +31,9 @@ or ScrcpyRecv and does not interact with either app.
    another Home window is simultaneously visible.
    The padded editor uses compact labeled rows and scrolls on short/landscape
    screens or with the keyboard open; Cancel/Save remain outside the scrolling form.
+   Live natural phone dimensions and a schematic show the effective clipped
+   area as values change (gray phone outline, teal crop outline/shading).
+   This is not a screenshot or drag editor and does not access screen pixels.
 3. Press **Play**, optionally allow normal notification permission, then approve
    Android screen-capture consent. Every Play requires fresh consent.
 4. **Stop** in Home or the foreground notification. Home/app switching does not
@@ -156,12 +159,12 @@ missing approval blocks APK publication explicitly. A draft release without an
 APK can be prepared while signing is pending; it is not an installable release.
 
 New published assets are `PartialCast-VERSION.apk` (for example,
-`PartialCast-0.1.2.apk`) and `SHA256SUMS`, whose entry matches that filename.
+`PartialCast-0.1.3.apk`) and `SHA256SUMS`, whose entry matches that filename.
 Notices are bundled inside the APK. Older releases retain their original
 `PartialCast.apk` filenames; existing public assets are never overwritten.
 Release versionName comes from the tag; versionCode is `10000 +` this workflow's
 run number, so preserve the workflow identity/version-code lineage. The default
-development version is `0.1.2` / code 1. Local permanent signing uses
+development version is `0.1.3` / code 1. Local permanent signing uses
 `ANDROID_KEYSTORE_PATH` plus the three alias/password variables and
 `-PrequireReleaseSigning=true`; do not expose these values on command lines.
 The permanent-signer APK cannot in-place update an unrelated debug signer.
@@ -219,8 +222,8 @@ Platform test APKs are compiled only. These results do not include connected
 capture tests or emulator acceptance. Separately authorized app deployment/UI
 checks do not validate the HDMI/EGL capture pipeline.
 
-Local Windows ARM64 SDK 37 validation: **84 JVM tests passed, zero failures/errors**;
-`lintDebug` passed with zero errors (25 non-blocking lint warnings).
+Local Windows ARM64 SDK 37 validation: **92 JVM tests passed, zero failures/errors**;
+`lintDebug` passed with zero errors (23 non-blocking lint warnings).
 All five tasks in the command above passed, including optimized unsigned release
 assembly. SDK 33 reproduces frozen portrait Activity metrics while the fresh
 provider rotates; live source queries are additionally tested on SDK 30/34.
