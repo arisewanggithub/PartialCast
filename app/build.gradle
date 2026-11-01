@@ -1,5 +1,31 @@
 plugins { id 'com.android.application' }
 
+def releaseCodeText = providers.gradleProperty('releaseVersionCode').getOrElse('1')
+if (!(releaseCodeText ==~ /[1-9][0-9]*/) || releaseCodeText.toBigInteger() > 2147483647) {
+    throw new GradleException('releaseVersionCode must be an integer from 1 to 2147483647')
+}
+def releaseVersion = providers.gradleProperty('releaseVersionName').getOrElse('0.1.0')
+if (!(releaseVersion ==~ /[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?/)) {
+    throw new GradleException('releaseVersionName must be a semantic version')
+}
+def requiredSigningText = providers.gradleProperty('requireReleaseSigning').getOrElse('false')
+if (!(requiredSigningText in ['true', 'false'])) {
+    throw new GradleException('requireReleaseSigning must be literal true or false')
+}
+def releaseSigning = [
+    path: providers.environmentVariable('ANDROID_KEYSTORE_PATH').getOrElse(''),
+    alias: providers.environmentVariable('ANDROID_KEY_ALIAS').getOrElse(''),
+    storePassword: providers.environmentVariable('ANDROID_KEYSTORE_PASSWORD').getOrElse(''),
+    keyPassword: providers.environmentVariable('ANDROID_KEY_PASSWORD').getOrElse('')
+]
+def signingConfigured = releaseSigning.values().every { it }
+if (releaseSigning.values().any { it } && !signingConfigured) {
+    throw new GradleException('Incomplete dedicated PartialCast release signing configuration')
+}
+if (requiredSigningText == 'true' && !signingConfigured) {
+    throw new GradleException('Publication requires dedicated PartialCast signing; unsigned/debug publication is forbidden')
+}
+
 android {
     namespace 'dev.screencopy.partialcast'
     compileSdk 37
@@ -8,8 +34,8 @@ android {
         applicationId 'dev.screencopy.partialcast'
         minSdk 30
         targetSdk 37
-        versionCode 1
-        versionName '0.1'
+        versionCode releaseCodeText.toInteger()
+        versionName releaseVersion
         testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
     }
     compileOptions {
@@ -20,10 +46,22 @@ android {
     lint { abortOnError true }
     buildTypes {
         release {
+            debuggable false
             minifyEnabled true
             shrinkResources true
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
         }
+    }
+    if (signingConfigured) {
+        signingConfigs {
+            publication {
+                storeFile file(releaseSigning.path)
+                keyAlias releaseSigning.alias
+                storePassword releaseSigning.storePassword
+                keyPassword releaseSigning.keyPassword
+            }
+        }
+        buildTypes.release.signingConfig = signingConfigs.publication
     }
 }
 

@@ -82,7 +82,8 @@ $env:ANDROID_HOME='C:\path\to\Android\Sdk'
 .\gradlew.bat :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest :app:assembleRelease --console=plain
 ```
 
-Release assembly enables R8 and resource shrinking and is **unsigned**.
+Release assembly enables R8 and resource shrinking and is **unsigned** unless
+the complete dedicated release signing environment is supplied.
 Debug builds use Android's ordinary local development signing. No signing
 material is stored in this repository. Do not distribute the unsigned release
 as an installable APK.
@@ -94,6 +95,50 @@ use the same package/key and increasing versionCode. PartialCast contains no
 installer/updater; GitHub-distributed updates are user-managed through Android.
 Nothing here automatically satisfies Play Console Data Safety or foreground
 service declarations/demo requirements if Play is reconsidered later.
+
+### PR, CI and release automation
+
+[The pinned workflow](.github/workflows/build-release.yml) runs the same JVM
+tests, lint, debug/test APK compilation and **optimized unsigned release**
+assembly for PRs targeting main, main pushes, manual runs and `v*` tags.
+[APK verification](tools/verify-apk.ps1) checks real package/version/permissions/
+components, non-debuggability, retained notices/resources, R8 and resource-shrink
+reports, alignment, unsigned status and a release smaller than debug.
+CI artifacts are diagnostics, not production releases: runner debug signing is
+temporary and cannot update a differently signed local debug installation.
+Publication tests generate an independent two-day signing fixture only in
+temporary storage, test real optimized signing/certificate rejection, delete
+the key and signed fixture APK, and restore the unsigned artifact. That fixture
+is never published and is not the permanent PartialCast signer.
+Mappings are retained for 30 days; JVM/lint diagnostics for seven days.
+No emulator or real-phone capture/installation is run by this workflow.
+
+Stable tags must be `vMAJOR.MINOR.PATCH` from main. Publication depends on the
+successful checks for that same commit and rebuilds with a **dedicated permanent
+PartialCast signer**, never another app's or a debug key. Manually configure:
+
+- Secrets: `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEY_ALIAS`,
+  `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_PASSWORD`.
+- Variables: `ANDROID_SIGNING_CERT_SHA256` (the public 64-hex certificate pin)
+  and `BINARY_RELEASE_APPROVED=true` after distribution/license review.
+
+Do not paste credentials into issues/chat or commit signing files. Choose a
+generic certificate subject without personal contact details. Back up and keep
+the permanent key securely outside the checkout; losing it prevents normal
+updates. The workflow decodes it only into runner temporary storage and removes
+it after the job. Missing/incomplete signing, wrong signer, wrong source or
+missing approval blocks APK publication explicitly. A draft release without an
+APK can be prepared while signing is pending; it is not an installable release.
+
+Published assets are only `PartialCast.apk` and `SHA256SUMS`; notices are bundled
+inside the APK. Existing public release assets are never overwritten.
+Release versionName comes from the tag; versionCode is `10000 +` this workflow's
+run number, so preserve the workflow identity/version-code lineage. The default
+development version is `0.1.0` / code 1. Local permanent signing uses
+`ANDROID_KEYSTORE_PATH` plus the three alias/password variables and
+`-PrequireReleaseSigning=true`; do not expose these values on command lines.
+The permanent-signer APK cannot in-place update an unrelated debug signer.
+Any uninstall/data clearing is a separate explicit user decision.
 
 The JVM suites exercise geometry, crop storage, display eligibility, real
 Activity/service/Presentation lifecycles and an injected GPU boundary. SDK 33

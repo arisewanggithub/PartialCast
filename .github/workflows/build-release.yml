@@ -1,0 +1,157 @@
+name: PartialCast PR CI and optimized releases
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  checks:
+    name: JVM lint debug and optimized release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Android SDK
+        shell: bash
+        run: |
+          set +e +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          result=${PIPESTATUS[1]}
+          set -e -o pipefail
+          if ((result != 0)); then echo "::error::Android SDK license acceptance failed"; exit "$result"; fi
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0"
+      - name: Tests lint debug test APK and unsigned optimized release
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest :app:assembleRelease -PrequireReleaseSigning=false --no-daemon --console=plain
+      - name: Verify actual optimized APK R8 resources and component boundaries
+        shell: pwsh
+        run: |
+          ./tools/verify-apk.ps1 -Apk app/build/outputs/apk/release/app-release-unsigned.apk -BuildTools "$env:ANDROID_HOME/build-tools/37.0.0" -DebugApk app/build/outputs/apk/debug/app-debug.apk
+      - name: Test publication gates with an independent disposable signing fixture
+        shell: pwsh
+        run: ./tools/test-publication.ps1 -BuildTools "$env:ANDROID_HOME/build-tools/37.0.0"
+      - name: Retain JVM and lint diagnostics
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: PartialCast-checks-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            app/build/test-results/testDebugUnitTest/TEST-*.xml
+            app/build/reports/lint-results-debug.*
+      - name: Retain diagnostic APKs and exact optimized mappings
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: PartialCast-build-${{ github.sha }}-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            app/build/outputs/apk/release/app-release-unsigned.apk
+            app/build/outputs/mapping/release/mapping.txt
+            app/build/outputs/mapping/release/resources.txt
+  publish:
+    name: Publish verified permanent-signer APK
+    needs: [checks]
+    if: github.repository == 'arisewanggithub/PartialCast' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require approval dedicated signer and a main-source stable tag
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          BINARY_RELEASE_APPROVED: ${{ vars.BINARY_RELEASE_APPROVED }}
+          CERTIFICATE_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          [[ "$BINARY_RELEASE_APPROVED" == true ]] || { echo "::error::Binary release approval is required"; exit 1; }
+          for value in ANDROID_KEYSTORE_BASE64 ANDROID_KEY_ALIAS ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_PASSWORD; do
+            [[ -n "${!value}" ]] || { echo "::error::Missing dedicated PartialCast signing secret: $value"; exit 1; }
+          done
+          [[ "$CERTIFICATE_SHA256" =~ ^[a-fA-F0-9]{64}$ ]] || { echo "::error::Pinned permanent certificate SHA256 is required"; exit 1; }
+          [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::Use a vMAJOR.MINOR.PATCH tag"; exit 1; }
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]] || { echo "::error::Checkout differs from tested source"; exit 1; }
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || { echo "::error::Release source must belong to main"; exit 1; }
+          code=$((10000 + GITHUB_RUN_NUMBER))
+          ((code <= 2147483647)) || { echo "::error::versionCode exhausted"; exit 1; }
+          umask 077
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/partialcast-release.keystore"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/partialcast-release.keystore" >> "$GITHUB_ENV"
+          echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          echo "RELEASE_CODE=$code" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install pinned Android SDK
+        shell: bash
+        run: |
+          set +e +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          result=${PIPESTATUS[1]}
+          set -e -o pipefail
+          if ((result != 0)); then echo "::error::Android SDK license acceptance failed"; exit "$result"; fi
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.0" "build-tools;37.0.0"
+      - name: Build permanently signed optimized release
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:assembleRelease -PrequireReleaseSigning=true -PreleaseVersionCode="$RELEASE_CODE" -PreleaseVersionName="$RELEASE_VERSION" --no-daemon --console=plain
+      - name: Verify signer package version R8 resources and publication assets
+        shell: pwsh
+        env:
+          CERTIFICATE_SHA256: ${{ vars.ANDROID_SIGNING_CERT_SHA256 }}
+        run: |
+          ./tools/verify-apk.ps1 -Apk app/build/outputs/apk/release/app-release.apk -BuildTools "$env:ANDROID_HOME/build-tools/37.0.0" -Signing Signed -VersionCode ([long]$env:RELEASE_CODE) -VersionName $env:RELEASE_VERSION -ExpectedCertificateSha256 $env:CERTIFICATE_SHA256 -OutputDirectory publication-output
+      - name: Retain signed release mappings privately
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: PartialCast-release-mapping-${{ github.sha }}-${{ github.run_id }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            app/build/outputs/mapping/release/mapping.txt
+            app/build/outputs/mapping/release/resources.txt
+      - name: Publish only the verified APK and checksum
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --json isDraft,assets > "$RUNNER_TEMP/partialcast-release.json"; then
+            jq -e '.isDraft == true and (.assets | length) == 0' "$RUNNER_TEMP/partialcast-release.json" >/dev/null || { echo "::error::Refusing to overwrite a published release or existing assets"; exit 1; }
+          else
+            gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "PartialCast $GITHUB_REF_NAME" --notes "Experimental local GPU projection. Requires Android 11+ and a public secondary display. No captured audio or network transport. Hardware latency/stability remain unmeasured; see README and PRIVACY."
+          fi
+          gh release upload "$GITHUB_REF_NAME" publication-output/PartialCast.apk publication-output/SHA256SUMS
+          gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+      - name: Remove runner-only signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/partialcast-release.keystore"
