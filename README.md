@@ -2,8 +2,10 @@
 
 **Share part or all of your screen**
 
-Home displays the actual installed package version name and build code, not a
-hardcoded development version or a remotely checked release.
+Home displays the actual installed package version name in a separate section
+at the bottom of the page, not a hardcoded development version or a remotely
+checked release. Android's increasing
+internal versionCode is retained for updates but is not displayed on Home.
 
 Independent Android 11+ app (`dev.screencopy.partialcast`) for **local GPU
 projection** to a public secondary presentation display. It is not ScrcpySend
@@ -50,10 +52,11 @@ there is **no guarantee of audio forwarding**.
 
 ## Privacy and platform limits
 
-See [PRIVACY.md](PRIVACY.md) and [DESIGN.md](DESIGN.md). There is no Internet,
-microphone, installer, overlay, privileged capture or root permission. No
-encoder/decoder, network receiver, bitmap readback, analytics, bundled updater
-or capture files are included. Only the four crop integers are stored, with
+See [PRIVACY.md](PRIVACY.md) and [DESIGN.md](DESIGN.md). Internet permission is
+used only for anonymous GitHub release metadata checks. There is no microphone,
+installer, overlay, privileged capture or root permission. No encoder/decoder,
+network receiver, bitmap readback, analytics, APK downloader or capture files
+are included. Only the four crop integers are stored, with
 app backup disabled. The app cannot enforce exclusivity against another app.
 
 Android 14+ always requests the default phone display with public
@@ -95,9 +98,27 @@ Distribution can use GitHub rather than Play Store. Publication is a separate
 authorized step: choose licensing, privately manage a stable release key, sign
 and verify the optimized APK, and publish that APK and notices. Updates must
 use the same package/key and increasing versionCode. PartialCast contains no
-installer/updater; GitHub-distributed updates are user-managed through Android.
+installer or APK downloader; installation is user-managed through the browser
+and Android.
 Nothing here automatically satisfies Play Console Data Safety or foreground
 service declarations/demo requirements if Play is reconsidered later.
+
+### Silent launch update check
+
+Each fresh Home launch checks GitHub's anonymous stable-release metadata once
+in the background. Rotation/recreation and ordinary resume do not retry; no
+status indicator or dialog is shown for no update, failed/offline/private
+responses or invalid metadata. Rate-limited checks cool down in-process.
+Only a newer stable semantic version with a completed APK prompts, and only
+when Home is resumed and capture is idle. Checks never stop capture.
+Choose **Later** to dismiss for that launch or **Upgrade** to open the exact
+GitHub release page in your browser. Download/installation are then explicit
+user/browser/Android actions, not performed by PartialCast. Versioned and
+legacy `PartialCast.apk` release names both work.
+
+No GitHub credentials, capture data or persistent device identifiers are sent.
+The repository/releases must be publicly accessible for anonymous checks;
+private repositories return unavailable results, not credential prompts.
 
 ### PR, CI and release automation
 
@@ -134,11 +155,13 @@ it after the job. Missing/incomplete signing, wrong signer, wrong source or
 missing approval blocks APK publication explicitly. A draft release without an
 APK can be prepared while signing is pending; it is not an installable release.
 
-Published assets are only `PartialCast.apk` and `SHA256SUMS`; notices are bundled
-inside the APK. Existing public release assets are never overwritten.
+New published assets are `PartialCast-VERSION.apk` (for example,
+`PartialCast-0.1.2.apk`) and `SHA256SUMS`, whose entry matches that filename.
+Notices are bundled inside the APK. Older releases retain their original
+`PartialCast.apk` filenames; existing public assets are never overwritten.
 Release versionName comes from the tag; versionCode is `10000 +` this workflow's
 run number, so preserve the workflow identity/version-code lineage. The default
-development version is `0.1.1` / code 1. Local permanent signing uses
+development version is `0.1.2` / code 1. Local permanent signing uses
 `ANDROID_KEYSTORE_PATH` plus the three alias/password variables and
 `-PrequireReleaseSigning=true`; do not expose these values on command lines.
 The permanent-signer APK cannot in-place update an unrelated debug signer.
@@ -196,14 +219,14 @@ Platform test APKs are compiled only. These results do not include connected
 capture tests or emulator acceptance. Separately authorized app deployment/UI
 checks do not validate the HDMI/EGL capture pipeline.
 
-Local Windows ARM64 SDK 37 validation: **67 JVM tests passed, zero failures/errors**;
+Local Windows ARM64 SDK 37 validation: **84 JVM tests passed, zero failures/errors**;
 `lintDebug` passed with zero errors (25 non-blocking lint warnings).
 All five tasks in the command above passed, including optimized unsigned release
 assembly. SDK 33 reproduces frozen portrait Activity metrics while the fresh
 provider rotates; live source queries are additionally tested on SDK 30/34.
 `aapt2` checks verify min/target 30/37, the distinct package, one exported
-launcher Activity, one non-exported mediaProjection service, and only the three
-foreground-service/notification permissions. R8/resource-shrink reports and
+launcher Activity, one non-exported mediaProjection service, and only the four
+foreground-service/notification/Internet permissions. R8/resource-shrink reports and
 APK resources/notices are retained; no native libraries or bundled executables
 are present. `apksigner verify` accepts debug and rejects unsigned release as
 expected. These are build/JVM checks, **not hardware acceptance**.
@@ -213,7 +236,7 @@ expected. These are build/JVM checks, **not hardware acceptance**.
 The app uses public Handler/Looper APIs, not MessageQueue reflection or static
 final-field mutation. Android 17's local-network permission and background-audio
 restrictions do not require new permissions: PartialCast has no app-managed
-network or audio APIs. Consent/foreground-service startup still requires the
+LAN or audio APIs; Internet is restricted to release metadata. Consent/foreground-service startup still requires the
 resumed control Activity, without new background-launch privileges. Modern
 Back callbacks explicitly Stop and finish Home instead of relying on Android's
 root-Activity default Back behavior; Android 11/12 use the same legacy policy.

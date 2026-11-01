@@ -98,13 +98,28 @@ are reused between size changes; there is no ImageReader/CPU pixel readback.
 The app compiles/targets Android 17 (API 37), retaining min SDK 30. The reviewed
 [targeted changes](https://developer.android.com/about/versions/17/behavior-changes-17)
 and [all-app changes](https://developer.android.com/about/versions/17/behavior-changes-all)
-do not introduce network/audio permissions into this GPU-only pipeline.
+do not introduce LAN/audio permissions into the GPU pipeline. The separately
+requested launch update check uses Internet only for public GitHub metadata.
 Handler/Looper calls stay public and no static final fields are mutated.
 Consent is foreground-only; notification return does not start new capture.
 An explicit registered Back callback on API 33+ (legacy onBackPressed below)
 retires the session and finishes Home, while Home/app switching keeps it alive.
 Android 17 process memory limits are not disabled or bypassed.
 Actual Android 17 runtime behavior is not covered by the older-SDK JVM fixtures.
+
+## Update prompt boundary
+
+`GitHubUpdateSource` follows the sender/receiver prior art's bounded anonymous
+metadata HTTP requests and validates the exact repository/tag/asset paths.
+It does not import their downloader, installer, protocol or credentials.
+Stable semantic versions are compared numerically; versioned and legacy asset
+names work. Redirects, oversized/incomplete metadata and failed/private
+responses are rejected; rate-limit cooldowns do not retry on resume.
+`LaunchUpdateCheck` owns a one-shot background worker and retains check/handled
+state across configuration changes without retaining an Activity. Destruction
+detaches UI and cancels non-retained work. Home presents results only foreground
+and idle; Later/Back dismisses for the launch. Upgrade opens the validated
+release page through a browser, never stops or restarts projection.
 
 The SDK 33 fixture reproduces stale portrait maximumWindowMetrics using a real
 stopped Activity with frozen configuration, while the fresh provider follows

@@ -73,7 +73,25 @@ try {
         throw 'PKCS12 conversion changed the signing certificate'
     }
     & (Join-Path $PSScriptRoot 'verify-apk.ps1') -Apk $signed -BuildTools $BuildTools -Signing Signed `
-        -VersionCode 10001 -VersionName '0.1.0' -ExpectedCertificateSha256 $fingerprint
+        -VersionCode 10001 -VersionName '0.1.0' -ExpectedCertificateSha256 $fingerprint -OutputDirectory $temporary
+    $assetName = 'PartialCast-0.1.0.apk'
+    $asset = Join-Path $temporary $assetName
+    $checksum = Join-Path $temporary 'SHA256SUMS'
+    $hash = (Get-FileHash -LiteralPath $signed -Algorithm SHA256).Hash.ToLowerInvariant()
+    if (!(Test-Path -LiteralPath $asset) -or (Get-FileHash -LiteralPath $asset -Algorithm SHA256).Hash.ToLowerInvariant() -ne $hash -or
+        (Get-Content -LiteralPath $checksum -Raw).Trim() -ne "$hash  $assetName" -or
+        (Test-Path -LiteralPath (Join-Path $temporary 'PartialCast.apk'))) {
+        throw 'Versioned publication filename/checksum contract failed'
+    }
+    $invalidVersionRejected = $false
+    try {
+        & (Join-Path $PSScriptRoot 'verify-apk.ps1') -Apk $signed -BuildTools $BuildTools `
+            -VersionName '../invalid' -OutputDirectory $temporary
+    } catch {
+        if ($_.Exception.Message -ne 'Expected versionName must be a filename-safe semantic version') { throw }
+        $invalidVersionRejected = $true
+    }
+    if (!$invalidVersionRejected) { throw 'Unsafe version filename was accepted' }
     $rejected = $false
     try {
         & (Join-Path $PSScriptRoot 'verify-apk.ps1') -Apk $signed -BuildTools $BuildTools -Signing Signed `
@@ -90,6 +108,10 @@ try {
     if (Test-Path -LiteralPath $legacy) { Remove-Item -LiteralPath $legacy }
     if (Test-Path -LiteralPath $certificate) { Remove-Item -LiteralPath $certificate }
     if (Test-Path -LiteralPath $legacyCertificate) { Remove-Item -LiteralPath $legacyCertificate }
+    foreach ($name in @('PartialCast-0.1.0.apk', 'SHA256SUMS')) {
+        $path = Join-Path $temporary $name
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path }
+    }
     Remove-Item -LiteralPath $temporary
     $restored = Invoke-TestNative $gradle @(':app:assembleRelease', '-PrequireReleaseSigning=false',
         '--no-daemon', '--console=plain', '--quiet')
@@ -97,4 +119,4 @@ try {
     if (Test-Path -LiteralPath $signed) { Remove-Item -LiteralPath $signed }
 }
 & (Join-Path $PSScriptRoot 'verify-apk.ps1') -Apk $unsigned -BuildTools $BuildTools
-Write-Output 'PASS: signing/version gates, certificate-preserving JKS/PKCS12 conversion, optimized signing, wrong-signer rejection, unsigned restoration'
+Write-Output 'PASS: signing/version gates, versioned APK/checksum, certificate-preserving conversion, optimized signing, wrong-signer rejection, unsigned restoration'

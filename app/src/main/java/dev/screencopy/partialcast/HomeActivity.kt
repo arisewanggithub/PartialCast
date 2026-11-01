@@ -5,6 +5,8 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.ActivityNotFoundException
+import android.net.Uri
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
@@ -47,6 +49,8 @@ class HomeActivity : Activity() {
     private lateinit var stop: Button
     private lateinit var edit: Button
     private var targets: List<LocalDisplayTarget> = emptyList()
+    private lateinit var updateCheck: LaunchUpdateCheck
+    private var updateDialog: AlertDialog? = null
     private val observer: () -> Unit = {
         if (targets != state.targets) {
             val selected = targets.getOrNull(displays.selectedItemPosition)?.id
@@ -66,6 +70,7 @@ class HomeActivity : Activity() {
         stop.isEnabled = active != null && active.phase != LocalDisplayState.Phase.STOPPING
         active?.takeIf { it.phase == LocalDisplayState.Phase.STOPPING }
             ?.let { LocalProjectionService.stop(it, state.message) }
+        if (::updateCheck.isInitialized) showUpdateIfIdle()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -88,11 +93,6 @@ class HomeActivity : Activity() {
         }
         root.addView(TextView(this).apply { setText(R.string.app_name); textSize = 30f })
         root.addView(TextView(this).apply { setText(R.string.subtitle); textSize = 18f })
-        root.addView(TextView(this).apply {
-            tag = "app-version"
-            text = installedVersionLabel()
-            textSize = 14f
-        })
         cropSummary = TextView(this).also(root::addView)
         edit = Button(this).apply { text = "Edit crop"; setOnClickListener { editCrop() } }.also(root::addView)
         root.addView(TextView(this).apply { text = "Presentation display" })
@@ -109,11 +109,34 @@ class HomeActivity : Activity() {
                 "Stop, Back, closing this Activity, removing the task, unplugging the display or system capture Stop ends it. " +
                 "Secure content may be blank. No cross-app exclusivity is enforced."
         })
+        root.addView(LinearLayout(this).apply {
+            tag = "version-section"
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, padding, 0, 0)
+            addView(View(this@HomeActivity).apply {
+                setBackgroundColor(getColor(android.R.color.darker_gray))
+                importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            }, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                resources.displayMetrics.density.toInt().coerceAtLeast(1)))
+            addView(TextView(this@HomeActivity).apply {
+                tag = "app-version"
+                text = installedVersionLabel()
+                textSize = 14f
+                setPadding(0, padding / 2, 0, 0)
+            })
+        })
         refreshCrop()
         stopObservingCrop = store.observe { if (!isDestroyed) refreshCrop() }
         state.observe(observer)
         discovery = LocalDisplayDiscovery(this, state::updateTargets)
         discovery.start()
+        @Suppress("DEPRECATION")
+        val installedVersion = packageManager.getPackageInfo(packageName, 0).versionName.orEmpty()
+        @Suppress("DEPRECATION")
+        val retained = lastNonConfigurationInstance as? LaunchUpdateCheck
+        updateCheck = retained ?: updateFactory(installedVersion)
+        updateCheck.attach(::showUpdateIfIdle)
+        updateCheck.start()
     }
 
     private fun refreshCrop() {
@@ -137,7 +160,7 @@ class HomeActivity : Activity() {
             Log.e("PartialCast", "Installed package version metadata is missing or invalid")
             return getString(R.string.version_unavailable)
         }
-        return getString(R.string.app_version, name, installed.longVersionCode)
+        return getString(R.string.app_version, name)
     }
 
     private fun editCrop() {
@@ -205,7 +228,7 @@ class HomeActivity : Activity() {
     }
 
     internal fun beginPlay() {
-        if (!resumed || state.active != null) return
+        if (!resumed || state.active != null || updateDialog?.isShowing == true) return
         try {
             check(display?.displayId == Display.DEFAULT_DISPLAY) { "Open PartialCast on the default phone display, not the output display." }
             val crop = store.load()
@@ -264,6 +287,7 @@ class HomeActivity : Activity() {
         if (!state.consent(current, resultCode == RESULT_OK && data != null)) return
         pendingConsent = data
         startConsentedSession()
+        showUpdateIfIdle()
     }
     private fun startConsentedSession() {
         if (!resumed) return
@@ -285,6 +309,7 @@ class HomeActivity : Activity() {
         resumed = true
         continueNotificationConsent()
         startConsentedSession()
+        showUpdateIfIdle()
     }
     override fun onPause() { resumed = false; super.onPause() }
     override fun onStop() {
@@ -300,6 +325,13 @@ class HomeActivity : Activity() {
         finish()
     }
     override fun onDestroy() {
+        if (::updateCheck.isInitialized) {
+            updateCheck.detach()
+            if (!isChangingConfigurations) updateCheck.close()
+        }
+        updateDialog?.setOnDismissListener(null)
+        updateDialog?.dismiss()
+        updateDialog = null
         if (Build.VERSION.SDK_INT >= 33)
             backCallback?.let(onBackInvokedDispatcher::unregisterOnBackInvokedCallback)
         backCallback = null
@@ -315,12 +347,53 @@ class HomeActivity : Activity() {
         if (host.get() === this) host.clear()
         super.onDestroy()
     }
+    @Deprecated("Activity non-configuration retention")
+    override fun onRetainNonConfigurationInstance(): Any = updateCheck
+
+    private fun showUpdateIfIdle() {
+        if (!resumed || isFinishing || isDestroyed) return
+        if (state.active != null) {
+            updateDialog?.dismiss()
+            return
+        }
+        if (updateCheck.handled || updateDialog?.isShowing == true) return
+        val update = updateCheck.available ?: return
+        val dialog = AlertDialog.Builder(this).setTitle(R.string.update_title)
+            .setMessage(getString(R.string.update_message, update.version))
+            .setNegativeButton(R.string.update_later, null)
+            .setPositiveButton(R.string.update_open, null).create()
+        updateDialog = dialog
+        dialog.setOnDismissListener {
+            updateCheck.dismiss()
+            if (updateDialog === dialog) updateDialog = null
+        }
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (state.active != null || !resumed) {
+                    Log.w("PartialCast", "Upgrade browser launch deferred because the app is not foreground and idle")
+                    return@setOnClickListener
+                }
+                try {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(update.page)).addCategory(Intent.CATEGORY_BROWSABLE))
+                    dialog.dismiss()
+                } catch (e: ActivityNotFoundException) {
+                    Log.e("PartialCast", "No browser can open the release page", e)
+                    dialog.setMessage(getString(R.string.update_browser_unavailable))
+                } catch (e: SecurityException) {
+                    Log.e("PartialCast", "Android denied opening the release page", e)
+                    dialog.setMessage(getString(R.string.update_browser_unavailable))
+                }
+            }
+        }
+        dialog.show()
+    }
     private fun report(message: String) {
         Log.e("PartialCast", message)
         if (::status.isInitialized) status.text = message
         if (::cropSummary.isInitialized) cropSummary.text = message
     }
     companion object {
+        internal var updateFactory: (String) -> LaunchUpdateCheck = { LaunchUpdateCheck(GitHubUpdateSource(), it) }
         private var requestSequence = 700
         private fun nextRequestCode(): Int {
             check(requestSequence < 65534) { "Consent request identifiers exhausted; restart the app." }

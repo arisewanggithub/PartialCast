@@ -150,7 +150,7 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" --draft --verify-tag --title "PartialCast $GITHUB_REF_NAME" --notes "Experimental local GPU projection. Requires Android 11+ and a public secondary display. No captured audio or network transport. Hardware latency/stability remain unmeasured; see README and PRIVACY."
           fi
-          gh release upload "$GITHUB_REF_NAME" publication-output/PartialCast.apk publication-output/SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" "publication-output/PartialCast-$RELEASE_VERSION.apk" publication-output/SHA256SUMS
           gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
       - name: Remove runner-only signing material
         if: always()

@@ -8,7 +8,8 @@ content. A presentation target can be wireless; Android/device display routing
 is outside PartialCast's control.
 
 The app does not save, encode, upload, log, analyze or transmit capture through
-an app-managed network. It has no Internet or microphone permission, analytics,
+an app-managed network. Internet permission is used solely for anonymous
+GitHub release metadata; there is no microphone permission, analytics,
 advertising SDK, remote receiver, captured audio or playback loopback.
 GPU buffers necessarily hold transient screen content during an owned session;
 Stop releases owned display, projection, surfaces, texture and EGL resources.
@@ -31,6 +32,14 @@ is attempted. OEMs may stop/dismiss capture despite the foreground service.
 
 No captured audio is forwarded. Normal Android audio routing may or may not
 route audio over the connected display interface.
+
+A fresh Home launch checks the public GitHub latest stable release API once.
+GitHub receives ordinary HTTPS request metadata (including IP address) and a
+generic updater User-Agent, not screen content, saved crop, credentials, phone
+identifiers or analytics. Only newer versions prompt while capture is idle.
+Failures/private releases remain silent in the UI and are logged locally.
+Upgrade opens the release page in the user's browser; PartialCast does not
+download, store or install APKs and requests no installer permission.
 
 This document describes this app's behavior, not an automatically completed
 Play Store Data Safety/foreground-service submission. GitHub distribution does

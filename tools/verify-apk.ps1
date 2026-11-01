@@ -3,7 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$BuildTools,
     [ValidateSet('Unsigned', 'Signed')][string]$Signing = 'Unsigned',
     [long]$VersionCode = 1,
-    [string]$VersionName = '0.1.1',
+    [string]$VersionName = '0.1.2',
     [string]$ExpectedCertificateSha256 = '',
     [string]$DebugApk = '',
     [string]$OutputDirectory = ''
@@ -29,6 +29,9 @@ function Invoke-AndroidTool {
 
 if (!(Test-Path -LiteralPath $Apk -PathType Leaf)) { throw 'APK is missing' }
 if ($VersionCode -lt 1 -or $VersionCode -gt 2147483647) { throw 'Invalid expected versionCode' }
+if ($VersionName -notmatch '^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$') {
+    throw 'Expected versionName must be a filename-safe semantic version'
+}
 if ($Signing -eq 'Signed' -and $ExpectedCertificateSha256 -notmatch '^[a-fA-F0-9]{64}$') {
     throw 'Signed publication requires a pinned permanent certificate SHA256'
 }
@@ -41,8 +44,9 @@ foreach ($expected in @("name='dev.screencopy.partialcast'", "versionCode='$Vers
 $manifest = Invoke-AndroidTool 'aapt2' @('dump', 'xmltree', '--file', 'AndroidManifest.xml', $Apk)
 if ($manifest.ExitCode -ne 0) { throw 'APK manifest extraction failed' }
 $text = $manifest.Text
-if ([regex]::Matches($text, 'E: uses-permission ').Count -ne 3 -or
-    $text -match 'android.permission.(INTERNET|ACCESS_LOCAL_NETWORK|RECORD_AUDIO|REQUEST_INSTALL_PACKAGES|SYSTEM_ALERT_WINDOW)') {
+if ([regex]::Matches($text, 'E: uses-permission ').Count -ne 4 -or
+    $text -notmatch 'android.permission.INTERNET' -or
+    $text -match 'android.permission.(ACCESS_LOCAL_NETWORK|RECORD_AUDIO|REQUEST_INSTALL_PACKAGES|SYSTEM_ALERT_WINDOW)') {
     throw 'APK permission boundary changed'
 }
 if ([regex]::Matches($text, 'E: activity ').Count -ne 1 -or
@@ -101,9 +105,10 @@ $alignment = Invoke-AndroidTool 'zipalign' @('-c', '4', $Apk)
 if ($alignment.ExitCode -ne 0) { throw 'APK alignment verification failed' }
 $sha = (Get-FileHash -LiteralPath $Apk -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($OutputDirectory) {
+    $assetName = "PartialCast-$VersionName.apk"
     New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-    Copy-Item -LiteralPath $Apk -Destination (Join-Path $OutputDirectory 'PartialCast.apk')
-    "$sha  PartialCast.apk" | Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS') -Encoding ASCII
+    Copy-Item -LiteralPath $Apk -Destination (Join-Path $OutputDirectory $assetName)
+    "$sha  $assetName" | Set-Content -LiteralPath (Join-Path $OutputDirectory 'SHA256SUMS') -Encoding ASCII
 }
 Write-Output "Verified optimized PartialCast: code=$VersionCode version=$VersionName signing=$Signing SHA256=$sha"
 if ($certificate) { Write-Output "Pinned certificate SHA256=$certificate" }

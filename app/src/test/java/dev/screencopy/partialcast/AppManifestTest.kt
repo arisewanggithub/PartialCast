@@ -21,7 +21,7 @@ class AppManifestTest {
         assertEquals(37, context.applicationInfo.targetSdkVersion)
         val info = context.packageManager.getPackageInfo(context.packageName,
             PackageManager.GET_PERMISSIONS or PackageManager.GET_ACTIVITIES or PackageManager.GET_SERVICES)
-        assertEquals(setOf("android.permission.FOREGROUND_SERVICE",
+        assertEquals(setOf("android.permission.INTERNET", "android.permission.FOREGROUND_SERVICE",
             "android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION", "android.permission.POST_NOTIFICATIONS"),
             checkNotNull(info.requestedPermissions).toSet())
         assertEquals(0, context.applicationInfo.flags and ApplicationInfo.FLAG_ALLOW_BACKUP)

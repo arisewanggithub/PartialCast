@@ -12,6 +12,7 @@ import android.view.View
 import android.widget.Button
 import android.widget.EditText
 import android.widget.TextView
+import android.widget.LinearLayout
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -36,6 +37,7 @@ import org.robolectric.util.ReflectionHelpers
 @LooperMode(LooperMode.Mode.PAUSED)
 class HomeActivityTest {
     private val state = LocalDisplayState.shared
+    private val previousUpdateFactory = HomeActivity.updateFactory
     private lateinit var controller: ActivityController<HomeActivity>
     private lateinit var output: VirtualDisplay
     private lateinit var consent: Intent
@@ -70,6 +72,7 @@ class HomeActivityTest {
     }
 
     @Before fun openHome() {
+        HomeActivity.updateFactory = { noUpdateCheck(it) }
         val app = RuntimeEnvironment.getApplication()
         app.getSharedPreferences("crop", 0).edit().clear().commit()
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
@@ -101,6 +104,7 @@ class HomeActivityTest {
         state.active?.let { state.finish(it, "Test cleanup") }
         state.updateTargets(emptyList())
         output.release()
+        HomeActivity.updateFactory = previousUpdateFactory
     }
     @Test fun homeAndReturnKeepIdentityWithoutNewConsentOrServiceStart() {
         grantConsent()
@@ -113,10 +117,24 @@ class HomeActivityTest {
         assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
     }
     @Suppress("DEPRECATION")
-    @Test fun homeDisplaysActualInstalledVersionNameAndLongBuildCode() {
+    @Test fun homeDisplaysActualInstalledVersionNameWithoutBuildCode() {
         val activity = controller.get()
         val installed = activity.packageManager.getPackageInfo(activity.packageName, 0)
-        assertEquals(activity.getString(R.string.app_version, installed.versionName, installed.longVersionCode), version(activity))
+        assertEquals(activity.getString(R.string.app_version, installed.versionName), version(activity))
+        assertFalse(version(activity).contains("(build"))
+    }
+    @Test fun versionIsInASeparateSectionAtTheBottomOfHomeContent() {
+        val activity = controller.get()
+        val section = activity.window.decorView.findViewWithTag<LinearLayout>("version-section")
+        val root = section.parent as LinearLayout
+        assertSame(section, root.getChildAt(root.childCount - 1))
+        assertEquals(2, section.childCount)
+        assertEquals(View.IMPORTANT_FOR_ACCESSIBILITY_NO, section.getChildAt(0).importantForAccessibility)
+        val label = activity.window.decorView.findViewWithTag<TextView>("app-version")
+        assertSame(section, label.parent)
+        assertSame(label, section.getChildAt(1))
+        assertTrue(section.paddingTop > 0)
+        assertFalse(label.text.toString().contains("(build"))
     }
     @Suppress("DEPRECATION")
     @Test fun homeUsesReleaseMetadataRatherThanHardcodedDevelopmentVersion() {
@@ -126,7 +144,7 @@ class HomeActivityTest {
         installed.longVersionCode = 10005
         shadowOf(context.packageManager).installPackage(installed)
         val release = anotherHome()
-        try { assertEquals("Version 0.1.1 (build 10005)", version(release.get())) }
+        try { assertEquals("Version 0.1.1", version(release.get())) }
         finally { release.pause().stop().destroy() }
     }
     @Suppress("DEPRECATION")

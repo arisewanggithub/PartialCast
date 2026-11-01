@@ -36,6 +36,7 @@ import org.robolectric.util.ReflectionHelpers
 @GraphicsMode(GraphicsMode.Mode.LEGACY)
 @LooperMode(LooperMode.Mode.PAUSED)
 class CropDialogLayoutTest {
+    private val previousUpdateFactory = HomeActivity.updateFactory
     private lateinit var controller: ActivityController<HomeActivity>
     private lateinit var dialog: AlertDialog
     private lateinit var fields: List<EditText>
@@ -46,6 +47,7 @@ class CropDialogLayoutTest {
     private fun dp(value: Int) = (value * controller.get().resources.displayMetrics.density).toInt()
 
     @Before fun openEditor() {
+        HomeActivity.updateFactory = { noUpdateCheck(it) }
         val app = RuntimeEnvironment.getApplication()
         app.getSharedPreferences("crop", 0).edit().clear().commit()
         controller = Robolectric.buildActivity(HomeActivity::class.java)
@@ -63,6 +65,7 @@ class CropDialogLayoutTest {
     @After fun cleanup() {
         dialog.dismiss()
         controller.pause().stop().destroy()
+        HomeActivity.updateFactory = previousUpdateFactory
     }
     @Test fun contentIsPaddedAndFourCompactRowsKeepActionsOutsideScroll() {
         assertEquals(dp(24), root.paddingLeft)

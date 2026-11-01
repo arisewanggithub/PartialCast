@@ -57,6 +57,7 @@ class LocalProjectionServiceTest {
     }
     private val state = LocalDisplayState.shared
     private val defaultFactory = LocalProjectionService.rendererFactory
+    private val previousUpdateFactory = HomeActivity.updateFactory
     private lateinit var activity: ActivityController<HomeActivity>
     private lateinit var service: ServiceController<LocalProjectionService>
     private lateinit var display: VirtualDisplay
@@ -69,6 +70,7 @@ class LocalProjectionServiceTest {
     private var factoryCalls = 0
 
     @Before fun startOwnedService() {
+        HomeActivity.updateFactory = { noUpdateCheck(it) }
         val app = RuntimeEnvironment.getApplication()
         app.getSharedPreferences("crop", 0).edit().clear().commit()
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
@@ -113,6 +115,7 @@ class LocalProjectionServiceTest {
         state.updateTargets(emptyList())
         display.release()
         LocalProjectionService.rendererFactory = defaultFactory
+        HomeActivity.updateFactory = previousUpdateFactory
     }
     @Test fun backgroundAndReturnDoNotStopServiceAndStaleStopIsRejected() {
         frame()
