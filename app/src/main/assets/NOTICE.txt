@@ -1,0 +1,7 @@
+PartialCast
+Local projection helpers adapted from the author's public ScrcpySend experiment.
+
+Kotlin standard library 2.2.10 and JetBrains annotations 13.0
+Copyright JetBrains s.r.o. and Kotlin Programming Language contributors.
+Licensed under Apache License 2.0; see licenses/Apache-2.0.txt.
+https://github.com/JetBrains/kotlin
