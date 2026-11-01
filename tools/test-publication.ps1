@@ -35,18 +35,29 @@ Assert-GradleRejects '-PreleaseVersionName=invalid' 'releaseVersionName must be 
 $temporary = Join-Path ([System.IO.Path]::GetTempPath()) ('partialcast-publication-test-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temporary | Out-Null
 $keystore = Join-Path $temporary 'fixture.p12'
+$legacy = Join-Path $temporary 'fixture.jks'
 $certificate = Join-Path $temporary 'fixture.der'
+$legacyCertificate = Join-Path $temporary 'legacy.der'
 $previousPassword = $env:PARTIALCAST_TEST_PASSWORD
 $env:PARTIALCAST_TEST_PASSWORD = [guid]::NewGuid().ToString('N')
 $signed = [System.IO.Path]::Combine([string[]]@($root, 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk'))
 $unsigned = [System.IO.Path]::Combine([string[]]@($root, 'app', 'build', 'outputs', 'apk', 'release', 'app-release-unsigned.apk'))
 try {
     # This independently generated short-lived signer is a fixture, never a release asset.
-    $generated = Invoke-TestNative $keytool @('-genkeypair', '-keystore', $keystore, '-storetype', 'PKCS12',
+    $generated = Invoke-TestNative $keytool @('-genkeypair', '-keystore', $legacy, '-storetype', 'JKS',
         '-alias', 'partialcast-ci-fixture', '-keyalg', 'RSA', '-keysize', '3072', '-validity', '2',
         '-dname', 'CN=PartialCast CI Fixture', '-storepass:env', 'PARTIALCAST_TEST_PASSWORD',
         '-keypass:env', 'PARTIALCAST_TEST_PASSWORD', '-noprompt')
     if ($generated.ExitCode -ne 0) { throw 'Independent signing fixture generation failed' }
+    $exportedLegacy = Invoke-TestNative $keytool @('-exportcert', '-keystore', $legacy, '-storetype', 'JKS',
+        '-alias', 'partialcast-ci-fixture', '-storepass:env', 'PARTIALCAST_TEST_PASSWORD', '-file', $legacyCertificate)
+    if ($exportedLegacy.ExitCode -ne 0) { throw 'Legacy fixture certificate export failed' }
+    $converted = Invoke-TestNative $keytool @('-importkeystore', '-srckeystore', $legacy, '-srcstoretype', 'JKS',
+        '-srcalias', 'partialcast-ci-fixture', '-srcstorepass:env', 'PARTIALCAST_TEST_PASSWORD',
+        '-srckeypass:env', 'PARTIALCAST_TEST_PASSWORD', '-destkeystore', $keystore, '-deststoretype', 'PKCS12',
+        '-destalias', 'partialcast-ci-fixture', '-deststorepass:env', 'PARTIALCAST_TEST_PASSWORD',
+        '-destkeypass:env', 'PARTIALCAST_TEST_PASSWORD', '-noprompt')
+    if ($converted.ExitCode -ne 0) { throw 'Preserve-key PKCS12 fixture conversion failed' }
     $env:ANDROID_KEYSTORE_PATH = $keystore
     $env:ANDROID_KEY_ALIAS = 'partialcast-ci-fixture'
     $env:ANDROID_KEYSTORE_PASSWORD = $env:PARTIALCAST_TEST_PASSWORD
@@ -58,6 +69,9 @@ try {
         '-storepass:env', 'PARTIALCAST_TEST_PASSWORD', '-file', $certificate)
     if ($exported.ExitCode -ne 0) { throw 'Fixture public certificate export failed' }
     $fingerprint = (Get-FileHash -LiteralPath $certificate -Algorithm SHA256).Hash
+    if ($fingerprint -ne (Get-FileHash -LiteralPath $legacyCertificate -Algorithm SHA256).Hash) {
+        throw 'PKCS12 conversion changed the signing certificate'
+    }
     & (Join-Path $PSScriptRoot 'verify-apk.ps1') -Apk $signed -BuildTools $BuildTools -Signing Signed `
         -VersionCode 10001 -ExpectedCertificateSha256 $fingerprint
     $rejected = $false
@@ -73,7 +87,9 @@ try {
     foreach ($name in $signingVariables) { Remove-Item "Env:$name" -ErrorAction SilentlyContinue }
     $env:PARTIALCAST_TEST_PASSWORD = $previousPassword
     if (Test-Path -LiteralPath $keystore) { Remove-Item -LiteralPath $keystore }
+    if (Test-Path -LiteralPath $legacy) { Remove-Item -LiteralPath $legacy }
     if (Test-Path -LiteralPath $certificate) { Remove-Item -LiteralPath $certificate }
+    if (Test-Path -LiteralPath $legacyCertificate) { Remove-Item -LiteralPath $legacyCertificate }
     Remove-Item -LiteralPath $temporary
     $restored = Invoke-TestNative $gradle @(':app:assembleRelease', '-PrequireReleaseSigning=false',
         '--no-daemon', '--console=plain', '--quiet')
@@ -81,4 +97,4 @@ try {
     if (Test-Path -LiteralPath $signed) { Remove-Item -LiteralPath $signed }
 }
 & (Join-Path $PSScriptRoot 'verify-apk.ps1') -Apk $unsigned -BuildTools $BuildTools
-Write-Output 'PASS: signing/version failure gates, independently signed optimized fixture, certificate mismatch, unsigned restoration'
+Write-Output 'PASS: signing/version gates, certificate-preserving JKS/PKCS12 conversion, optimized signing, wrong-signer rejection, unsigned restoration'

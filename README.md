@@ -107,7 +107,8 @@ reports, alignment, unsigned status and a release smaller than debug.
 CI artifacts are diagnostics, not production releases: runner debug signing is
 temporary and cannot update a differently signed local debug installation.
 Publication tests generate an independent two-day signing fixture only in
-temporary storage, test real optimized signing/certificate rejection, delete
+temporary storage, test certificate-preserving JKS-to-PKCS12 migration and real
+optimized signing/certificate rejection, delete
 the key and signed fixture APK, and restore the unsigned artifact. That fixture
 is never published and is not the permanent PartialCast signer.
 Mappings are retained for 30 days; JVM/lint diagnostics for seven days.
@@ -139,6 +140,46 @@ development version is `0.1.0` / code 1. Local permanent signing uses
 `-PrequireReleaseSigning=true`; do not expose these values on command lines.
 The permanent-signer APK cannot in-place update an unrelated debug signer.
 Any uninstall/data clearing is a separate explicit user decision.
+
+#### PKCS12 keys and existing JKS migration
+
+Release configuration explicitly uses PKCS12. For a **new** key, use a `.p12`
+file outside the checkout with `keytool -genkeypair -storetype PKCS12`,
+alias `partialcast`, RSA 3072 and an appropriate long validity. Use a generic
+subject such as `CN=PartialCast,O=PartialCast`, without personal contact details.
+Use the same PKCS12 password for `ANDROID_KEYSTORE_PASSWORD` and
+`ANDROID_KEY_PASSWORD`.
+
+If you already generated the JKS key, **do not generate a replacement key**.
+Back up the original and convert to a separate destination, preserving its
+private key/certificate. PowerShell with your existing `$keytool`:
+
+```powershell
+$source = "$env:USERPROFILE\partialcast-release.jks"
+$destination = "$env:USERPROFILE\partialcast-release.p12"
+if (Test-Path $destination) { throw 'Destination already exists; do not overwrite it' }
+$password = Read-Host 'PKCS12 store/key password' -AsSecureString
+$pointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($password)
+try {
+    $env:PARTIALCAST_P12_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($pointer)
+    & $keytool -importkeystore -srckeystore $source -srcstoretype JKS `
+        -srcalias partialcast -destkeystore $destination -deststoretype PKCS12 `
+        -destalias partialcast -deststorepass:env PARTIALCAST_P12_PASSWORD `
+        -destkeypass:env PARTIALCAST_P12_PASSWORD
+    if ($LASTEXITCODE -ne 0) { throw 'Key conversion failed' }
+} finally {
+    [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($pointer)
+    Remove-Item Env:PARTIALCAST_P12_PASSWORD
+    $password.Dispose()
+}
+```
+
+Keytool prompts for the original JKS/key passwords as needed. Export the public
+certificate from both stores and compare their DER-file SHA256 hashes before
+uploading: they must be identical. Base64-encode the new `.p12` for
+`ANDROID_KEYSTORE_BASE64`; alias and certificate pin stay unchanged. Update both
+password secrets to the PKCS12 password you chose. This changes the container,
+not Android signing identity, so it does not invalidate existing same-key APKs.
 
 The JVM suites exercise geometry, crop storage, display eligibility, real
 Activity/service/Presentation lifecycles and an injected GPU boundary. SDK 33

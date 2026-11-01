@@ -102,8 +102,8 @@ jobs:
           code=$((10000 + GITHUB_RUN_NUMBER))
           ((code <= 2147483647)) || { echo "::error::versionCode exhausted"; exit 1; }
           umask 077
-          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/partialcast-release.keystore"
-          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/partialcast-release.keystore" >> "$GITHUB_ENV"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/partialcast-release.p12"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/partialcast-release.p12" >> "$GITHUB_ENV"
           echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
           echo "RELEASE_CODE=$code" >> "$GITHUB_ENV"
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
@@ -154,4 +154,4 @@ jobs:
           gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
       - name: Remove runner-only signing material
         if: always()
-        run: rm -f "$RUNNER_TEMP/partialcast-release.keystore"
+        run: rm -f "$RUNNER_TEMP/partialcast-release.p12"
