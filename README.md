@@ -2,6 +2,9 @@
 
 **Share part or all of your screen**
 
+The launcher icon uses a red (`#9F2036`) background and a padded white (`#FFFFFF`)
+projection motif. Notifications use the unscaled transparent white foreground.
+
 Home displays the actual installed package version name in a separate section
 at the bottom of the page, not a hardcoded development version or a remotely
 checked release. Android's increasing

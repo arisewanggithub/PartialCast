@@ -1,6 +1,8 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android"
-    android:width="48dp" android:height="48dp" android:viewportWidth="48" android:viewportHeight="48">
-    <path android:fillColor="#136C73" android:pathData="M4,7h40v30h-40z" />
-    <path android:fillColor="#FFFFFF" android:pathData="M8,11h32v22h-32z" />
-    <path android:fillColor="#136C73" android:pathData="M16,16h19v12h-19zM18,39h12v3h-12z" />
-</vector>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/partialcast_icon_background" />
+    <item>
+        <inset android:drawable="@drawable/ic_partialcast_foreground"
+            android:insetLeft="7%" android:insetTop="7%"
+            android:insetRight="7%" android:insetBottom="7%" />
+    </item>
+</layer-list>

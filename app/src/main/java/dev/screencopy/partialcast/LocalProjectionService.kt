@@ -167,7 +167,7 @@ class LocalProjectionService : Service() {
                 .putExtra("localSession", token).setData(android.net.Uri.parse("partialcast://stop/$token")),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return Notification.Builder(this, "local-presentation")
-            .setSmallIcon(R.drawable.ic_partialcast)
+            .setSmallIcon(R.drawable.ic_partialcast_foreground)
             .setContentTitle("PartialCast is sharing your phone screen")
             .setContentText("Local presentation; system audio routing unchanged")
             .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, HomeActivity::class.java)
