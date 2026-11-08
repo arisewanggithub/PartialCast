@@ -76,6 +76,9 @@ Output surface changes repaint the acquired texture even when the phone content
 is static; they do not require a new consent or virtual display.
 Crop-only rotations with unchanged capture dimensions retain the acquired or
 pending frame; a static final 180-degree frame does not depend on another update.
+Dimension-changing rotations drain unread old frames before capture resizing,
+so the final resized replacement can be displayed even when no later callback
+arrives. Delayed callbacks cannot revive the same discarded old image.
 
 ## Build and validation
 
@@ -96,6 +99,16 @@ the complete dedicated release signing environment is supplied.
 Debug builds use Android's ordinary local development signing. No signing
 material is stored in this repository. Do not distribute the unsigned release
 as an installable APK.
+
+Debug builds install as **PartialCast Debug** (`dev.screencopy.partialcast.debug`)
+with a `-debug` version-name suffix. They can coexist with the signed release
+(`dev.screencopy.partialcast`) without replacing it or sharing its saved crop
+settings. Release identity, version name, label and signing are unchanged.
+Debug builds skip stable-release update metadata, since release APKs update
+the release package rather than the separate debug installation.
+Use the debug launcher explicitly when testing; stop the other app's capture
+before starting a new session, since cross-app projection exclusivity is not
+enforced.
 
 Distribution can use GitHub rather than Play Store. Publication is a separate
 authorized step: choose licensing, privately manage a stable release key, sign

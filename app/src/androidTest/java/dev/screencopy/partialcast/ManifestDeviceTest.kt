@@ -12,7 +12,8 @@ import org.junit.runner.RunWith
 class ManifestDeviceTest {
     @Test fun onlyUpdateMetadataNeedsInternetWithoutInstallerOverlayOrCapturedAudioPermissions() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
-        assertEquals("dev.screencopy.partialcast", context.packageName)
+        assertEquals("dev.screencopy.partialcast.debug", context.packageName)
+        assertEquals("PartialCast Debug", context.getString(R.string.app_name))
         assertEquals(37, context.applicationInfo.targetSdkVersion)
         @Suppress("DEPRECATION")
         val info = context.packageManager.getPackageInfo(context.packageName, PackageManager.GET_PERMISSIONS)

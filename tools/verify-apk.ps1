@@ -85,6 +85,12 @@ if ($DebugApk) {
         (Get-Item -LiteralPath $Apk).Length -ge (Get-Item -LiteralPath $DebugApk).Length) {
         throw 'Optimized release must be smaller than the comparison debug APK'
     }
+    $debugBadging = Invoke-AndroidTool 'aapt2' @('dump', 'badging', $DebugApk)
+    if ($debugBadging.ExitCode -ne 0) { throw 'Debug APK badging failed' }
+    foreach ($expected in @("name='dev.screencopy.partialcast.debug'", "versionCode='$VersionCode'",
+        "versionName='$VersionName-debug'", "application-label:'PartialCast Debug'")) {
+        if (!$debugBadging.Text.Contains($expected)) { throw "Debug APK identity/version mismatch: $expected" }
+    }
 }
 $signature = Invoke-AndroidTool 'apksigner' @('verify', '--print-certs', $Apk)
 $certificate = ''

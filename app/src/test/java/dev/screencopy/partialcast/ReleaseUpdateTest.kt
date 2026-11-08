@@ -44,6 +44,15 @@ class ReleaseUpdateTest {
         }
         assertEquals("0.10.0", GitHubUpdateSource.parse(metadata("0.10.0").toString(), "0.9.0")?.version)
     }
+    @Test fun debugBuildDoesNotRequestIncompatibleReleaseMetadata() {
+        var connections = 0
+        val source = GitHubUpdateSource {
+            connections++
+            Connection(metadata().toString().toByteArray())
+        }
+        assertNull(source.check("0.1.3-debug"))
+        assertEquals(0, connections)
+    }
     @Test fun sameOlderDraftAndPrereleaseNeverPrompt() {
         assertNull(GitHubUpdateSource.parse(metadata("0.1.2").toString(), "0.1.2"))
         assertNull(GitHubUpdateSource.parse(metadata("0.1.1").toString(), "0.1.2"))

@@ -37,6 +37,7 @@ internal class CaptureResizeState(private val requiresContentSize: Boolean) {
 
 internal class ProjectionFrameState {
     private var pending = false
+    private var imageTimestamp: Long? = null
     private var queued = false
     private var acquired = false
     fun frameAvailable() { pending = true }
@@ -47,12 +48,24 @@ internal class ProjectionFrameState {
     }
     fun beginDraw(): Boolean {
         queued = false
+        return takePendingFrame()
+    }
+    fun takePendingFrame(): Boolean {
         val update = pending
         pending = false
-        if (update) acquired = true
         return update
     }
-    fun invalidateImage() { acquired = false; pending = false }
+    fun imageUpdated(timestamp: Long) {
+        if (imageTimestamp != timestamp) acquired = true
+        imageTimestamp = timestamp
+    }
+    fun imageDiscarded(timestamp: Long) {
+        imageTimestamp = timestamp
+        acquired = false
+    }
+    fun invalidateImage() {
+        acquired = false
+    }
     fun captureGeometryChanged(previous: LocalGeometry?, next: LocalGeometry): Boolean {
         val changed = previous?.source != next.source || previous?.buffer != next.buffer
         if (changed) invalidateImage()
