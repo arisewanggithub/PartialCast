@@ -18,6 +18,8 @@ class AppManifestTest {
     @Suppress("DEPRECATION")
     @Test fun sdk37RemainsLocalOnlyWithOneLauncherAndProjectionService() {
         val context = RuntimeEnvironment.getApplication()
+        assertEquals("dev.screencopy.partialcast.debug", context.packageName)
+        assertEquals("PartialCast Debug", context.getString(R.string.app_name))
         assertEquals(37, context.applicationInfo.targetSdkVersion)
         val info = context.packageManager.getPackageInfo(context.packageName,
             PackageManager.GET_PERMISSIONS or PackageManager.GET_ACTIVITIES or PackageManager.GET_SERVICES)

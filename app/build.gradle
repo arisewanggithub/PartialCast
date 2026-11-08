@@ -45,6 +45,10 @@ android {
     testOptions { unitTests.includeAndroidResources = true }
     lint { abortOnError true }
     buildTypes {
+        debug {
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+        }
         release {
             debuggable false
             minifyEnabled true

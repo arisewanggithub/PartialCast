@@ -31,6 +31,10 @@ internal class GitHubUpdateSource(
 
     override fun check(installedVersion: String): ReleaseUpdate? {
         check(!cancelled) { "Update check cancelled" }
+        if (installedVersion.endsWith("-debug")) {
+            android.util.Log.i("PartialCast", "Debug build skips release-only update metadata")
+            return null
+        }
         if (System.currentTimeMillis() < retryAfter) throw IOException("GitHub update checks are cooling down")
         val current = open()
         connection = current

@@ -100,6 +100,16 @@ Debug builds use Android's ordinary local development signing. No signing
 material is stored in this repository. Do not distribute the unsigned release
 as an installable APK.
 
+Debug builds install as **PartialCast Debug** (`dev.screencopy.partialcast.debug`)
+with a `-debug` version-name suffix. They can coexist with the signed release
+(`dev.screencopy.partialcast`) without replacing it or sharing its saved crop
+settings. Release identity, version name, label and signing are unchanged.
+Debug builds skip stable-release update metadata, since release APKs update
+the release package rather than the separate debug installation.
+Use the debug launcher explicitly when testing; stop the other app's capture
+before starting a new session, since cross-app projection exclusivity is not
+enforced.
+
 Distribution can use GitHub rather than Play Store. Publication is a separate
 authorized step: choose licensing, privately manage a stable release key, sign
 and verify the optimized APK, and publish that APK and notices. Updates must
