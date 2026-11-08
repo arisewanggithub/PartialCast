@@ -68,7 +68,16 @@ rendering to black and are retried every 100 ms with a 1.5-second settling bound
 before an explicit unsupported-source error. Cleanup removes both reconciliation
 and retry callbacks. Drawing distinguishes pending new frames from cached images:
 output resize can repaint the cached texture without consuming a new frame,
-while source/buffer-dimension changes invalidate the old image. Crop-only changes
+while source/buffer-dimension changes invalidate the old image.
+Unread old frames are drained synchronously before changing the SurfaceTexture
+buffer size or resizing the virtual display. This empties the capture queue so
+the first resized buffer can notify the renderer; replacing an unread buffer
+need not send a Java frame-available callback. The delayed draw can acquire and
+retain the final resized replacement without needing another content change.
+Presentation eligibility is confirmed after updateTexImage using its timestamp:
+a delayed callback returning the same discarded/cached image cannot revive it
+after dimension invalidation. Draining preserves the already queued draw.
+Crop-only changes
 retain acquired and pending frames, update coordinates/viewport, and do not
 resize/rebind an unchanged capture buffer (including 180-degree rotation).
 Black-only swaps do

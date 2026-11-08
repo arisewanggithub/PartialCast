@@ -76,6 +76,9 @@ Output surface changes repaint the acquired texture even when the phone content
 is static; they do not require a new consent or virtual display.
 Crop-only rotations with unchanged capture dimensions retain the acquired or
 pending frame; a static final 180-degree frame does not depend on another update.
+Dimension-changing rotations drain unread old frames before capture resizing,
+so the final resized replacement can be displayed even when no later callback
+arrives. Delayed callbacks cannot revive the same discarded old image.
 
 ## Build and validation
 

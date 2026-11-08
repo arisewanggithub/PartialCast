@@ -171,6 +171,12 @@ internal class LocalProjectionRenderer(
         }
         val st = checkNotNull(surfaceTexture)
         val captureChanged = frames.captureGeometryChanged(geometry, next)
+        if (captureChanged && frames.takePendingFrame()) {
+            // Empty the old queue before resizing, not after a final resized frame can replace it.
+            st.updateTexImage()
+            frames.imageDiscarded(st.timestamp)
+            checkGl("drain capture before resize")
+        }
         if (captureChanged || lastPhone?.density != density) {
             st.setDefaultBufferSize(next.buffer.width, next.buffer.height)
             virtualDisplay?.resize(next.buffer.width, next.buffer.height, density)
@@ -191,6 +197,7 @@ internal class LocalProjectionRenderer(
             if (frames.beginDraw()) {
                 val st = checkNotNull(surfaceTexture)
                 st.updateTexImage()
+                frames.imageUpdated(st.timestamp)
                 st.getTransformMatrix(transform)
             }
             check(EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, surfaceDimension, 0)) { eglError("query width") }
