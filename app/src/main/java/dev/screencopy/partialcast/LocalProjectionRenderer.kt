@@ -19,10 +19,37 @@ import android.view.Surface
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+
+internal class OutputSurfaceException(message: String) : IllegalStateException(message)
+
+internal fun checkOutputResult(success: Boolean, operation: String, getError: () -> Int) {
+    if (success) return
+    val error = getError()
+    val message = "EGL $operation error 0x${error.toString(16)}"
+    if (error == EGL14.EGL_BAD_SURFACE || error == EGL14.EGL_BAD_NATIVE_WINDOW)
+        throw OutputSurfaceException(message)
+    throw IllegalStateException(message)
+}
+
+internal inline fun <T> bindOutputSurface(create: () -> T, bind: (T) -> Unit, release: (T) -> Unit): T {
+    val surface = create()
+    try { bind(surface) } catch (e: Exception) {
+        try { release(surface) } catch (cleanup: Exception) {
+            cleanup.addSuppressed(e)
+            throw cleanup
+        }
+        throw e
+    }
+    return surface
+}
 
 internal interface ProjectionOutput {
+    val outputGeneration: Long
     fun start(surface: Surface, width: Int, height: Int)
     fun resizeOutput(width: Int, height: Int)
+    fun detachOutput()
+    fun attachOutput(surface: Surface, width: Int, height: Int)
     fun phoneChanged()
     fun close(done: (String?) -> Unit)
 }
@@ -33,8 +60,9 @@ internal class LocalProjectionRenderer(
     private val options: LocalCaptureOptions,
     private val phoneSize: () -> PhoneSnapshot,
     private val failed: (String) -> Unit,
-    private val progress: (String) -> Unit,
-    private val createdDisplay: (Int) -> Unit
+    private val progress: (String, Long) -> Unit,
+    private val createdDisplay: (Int) -> Unit,
+    private val outputLost: (String, Long) -> Unit
 ) : ProjectionOutput {
     private val thread = HandlerThread("local-projection-gl").apply { start() }
     private val handler = Handler(thread.looper)
@@ -43,6 +71,11 @@ internal class LocalProjectionRenderer(
     private var eglDisplay: EGLDisplay = EGL14.EGL_NO_DISPLAY
     private var eglContext: EGLContext = EGL14.EGL_NO_CONTEXT
     private var eglSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var parkingSurface: EGLSurface = EGL14.EGL_NO_SURFACE
+    private var eglConfig: EGLConfig? = null
+    private val detached = AtomicBoolean(false)
+    private val outputEpoch = AtomicLong(0)
+    override val outputGeneration: Long get() = outputEpoch.get()
     private var program = 0
     private var texture = 0
     private var surfaceTexture: SurfaceTexture? = null
@@ -102,9 +135,48 @@ internal class LocalProjectionRenderer(
     }
     override fun resizeOutput(width: Int, height: Int) {
         handler.post { guarded {
+            if (detached.get()) return@guarded
             require(width > 0 && height > 0) { "Output surface has invalid dimensions" }
             outputSize = VideoSize(width, height)
             outputResizePending = true
+            geometry?.let { viewport = it.viewport(outputSize) }
+            scheduleDraw()
+        } }
+    }
+    override fun detachOutput() {
+        outputEpoch.incrementAndGet()
+        detached.set(true)
+        handler.post { guarded {
+            detached.set(true)
+            virtualDisplay?.surface = null
+            frames.invalidateImage()
+            releaseOutputSurface()
+        } }
+    }
+    override fun attachOutput(surface: Surface, width: Int, height: Int) {
+        val generation = outputEpoch.incrementAndGet()
+        handler.post { guarded(generation) {
+            if (generation != outputGeneration) return@guarded
+            check(eglSurface == EGL14.EGL_NO_SURFACE) { "Previous output is still attached" }
+            require(width > 0 && height > 0) { "Output surface has invalid dimensions" }
+            outputSize = VideoSize(width, height)
+            createOutputSurface(surface)
+            if (generation != outputGeneration) {
+                releaseOutputSurface()
+                return@guarded
+            }
+            // Drain the paused capture before rebinding; late callbacks cannot revive its image.
+            val st = checkNotNull(surfaceTexture)
+            st.updateTexImage()
+            frames.takePendingFrame()
+            frames.imageDiscarded(st.timestamp)
+            checkGl("drain capture before reconnect")
+            detached.set(false)
+            if (generation != outputGeneration) detached.set(true)
+            virtualDisplay?.surface = if (detached.get()) null else input
+            outputResizePending = true
+            sampleStart = 0L
+            presented = 0
             geometry?.let { viewport = it.viewport(outputSize) }
             scheduleDraw()
         } }
@@ -134,7 +206,7 @@ internal class LocalProjectionRenderer(
             if (changed || !wasReady) scheduleDraw()
         } else if (content.waiting) {
             if (!wasWaiting) {
-                progress("Waiting for default-phone capture dimensions to settle; presentation is paused.")
+                progress("Waiting for default-phone capture dimensions to settle; presentation is paused.", outputGeneration)
                 scheduleDraw()
             }
             check(handler.postDelayed(retryResize, CaptureResizeState.RETRY_INTERVAL_MS)) {
@@ -155,9 +227,16 @@ internal class LocalProjectionRenderer(
             if (!closing.get() && !faulted.get()) handler.postDelayed(this, 500)
         }
     }
-    private inline fun guarded(action: () -> Unit) {
+    private inline fun guarded(generation: Long = outputGeneration, action: () -> Unit) {
         if (closing.get() || faulted.get()) return
         try { action() }
+        catch (e: OutputSurfaceException) {
+            android.util.Log.w("PartialCast", "Presentation output became unavailable", e)
+            if (generation == outputGeneration) {
+                detached.set(true)
+                outputLost("Presentation output surface lost: ${e.message}", generation)
+            }
+        }
         catch (e: Exception) {
             faulted.set(true)
             android.util.Log.e("PartialCast", "Local projection failed", e)
@@ -180,7 +259,7 @@ internal class LocalProjectionRenderer(
         if (captureChanged || lastPhone?.density != density) {
             st.setDefaultBufferSize(next.buffer.width, next.buffer.height)
             virtualDisplay?.resize(next.buffer.width, next.buffer.height, density)
-            virtualDisplay?.surface = input
+            if (!detached.get()) virtualDisplay?.surface = input
         }
         geometry = next
         lastPhone = PhoneSnapshot(source, rotation, density)
@@ -190,19 +269,22 @@ internal class LocalProjectionRenderer(
         coordinates.clear(); coordinates.put(cropCoordinates); coordinates.position(0)
         android.util.Log.i("PartialCast", "capture_resize source=$source rotation=$rotation buffer=${next.buffer}")
         val detail = if (frames.canPresent(content.ready)) "Repainting the acquired frame." else "Waiting for frames."
-        progress("Captured phone $source; clipped crop ${rect.width} x ${rect.height}; full-resolution buffer ${next.buffer}. $detail")
+        progress("Captured phone $source; clipped crop ${rect.width} x ${rect.height}; full-resolution buffer ${next.buffer}. $detail",
+            outputGeneration)
     }
     private val draw: Runnable = Runnable {
-        guarded {
+        val generation = outputGeneration
+        guarded(generation) {
             if (frames.beginDraw()) {
                 val st = checkNotNull(surfaceTexture)
                 st.updateTexImage()
-                frames.imageUpdated(st.timestamp)
+                frames.imageUpdated(st.timestamp, outputAttached = !detached.get())
                 st.getTransformMatrix(transform)
             }
-            check(EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, surfaceDimension, 0)) { eglError("query width") }
+            if (detached.get()) return@guarded
+            checkOutput(EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, surfaceDimension, 0), "query width")
             val width = surfaceDimension[0]
-            check(EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT, surfaceDimension, 0)) { eglError("query height") }
+            checkOutput(EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT, surfaceDimension, 0), "query height")
             val height = surfaceDimension[0]
             check(width in 1..maxViewport[0] && height in 1..maxViewport[1]) {
                 "Output surface $width x $height exceeds GPU viewport limits"
@@ -228,26 +310,28 @@ internal class LocalProjectionRenderer(
                 GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
             }
             checkGl("draw")
-            check(EGL14.eglSwapBuffers(eglDisplay, eglSurface)) { eglError("swap buffers") }
+            checkOutput(EGL14.eglSwapBuffers(eglDisplay, eglSurface), "swap buffers")
+            if (generation != outputGeneration || detached.get()) return@guarded
             lastDraw = SystemClock.uptimeMillis()
             if (outputResizePending) {
                 outputResizePending = false
                 // Some EGL implementations apply native-window resizing only during the swap.
-                check(EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, surfaceDimension, 0)) { eglError("query resized width") }
+                checkOutput(EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_WIDTH, surfaceDimension, 0), "query resized width")
                 val resizedWidth = surfaceDimension[0]
-                check(EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT, surfaceDimension, 0)) { eglError("query resized height") }
+                checkOutput(EGL14.eglQuerySurface(eglDisplay, eglSurface, EGL14.EGL_HEIGHT, surfaceDimension, 0), "query resized height")
                 if (frames.changedAfterSwap(outputSize, resizedWidth, surfaceDimension[0])) scheduleDraw()
             }
             if (!presenting) return@guarded
             if (sampleStart == 0L)
-                progress("Playing: first frame presented; collecting presentation rate (not source FPS/latency).")
+                progress("Playing: first frame presented; collecting presentation rate (not source FPS/latency).", generation)
             if (sampleStart == 0L) sampleStart = lastDraw
             presented++
             val elapsed = lastDraw - sampleStart
             if (elapsed >= 2000) {
                 val current = checkNotNull(geometry)
                 progress("Playing: content ${current.source}, capture buffer ${current.buffer}; " +
-                    "presented ${(presented * 1000.0 / elapsed).toInt()} FPS over ${elapsed} ms (not source FPS/latency).")
+                    "presented ${(presented * 1000.0 / elapsed).toInt()} FPS over ${elapsed} ms (not source FPS/latency).",
+                    generation)
                 presented = 0; sampleStart = lastDraw
             }
         }
@@ -267,22 +351,23 @@ internal class LocalProjectionRenderer(
         val count = IntArray(1)
         check(EGL14.eglChooseConfig(eglDisplay, intArrayOf(
             EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT,
-            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT,
+            EGL14.EGL_SURFACE_TYPE, EGL14.EGL_WINDOW_BIT or EGL14.EGL_PBUFFER_BIT,
             EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8, EGL14.EGL_BLUE_SIZE, 8,
             EGL14.EGL_ALPHA_SIZE, 8, EGL14.EGL_NONE), 0, configs, 0, 1, count, 0) && count[0] > 0) {
             eglError("choose window config")
         }
         val config = checkNotNull(configs[0])
+        eglConfig = config
         eglContext = EGL14.eglCreateContext(eglDisplay, config, EGL14.EGL_NO_CONTEXT,
             intArrayOf(EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE), 0)
         check(eglContext != EGL14.EGL_NO_CONTEXT) { eglError("create context") }
-        eglSurface = EGL14.eglCreateWindowSurface(eglDisplay, config, output, intArrayOf(EGL14.EGL_NONE), 0)
-        check(eglSurface != EGL14.EGL_NO_SURFACE) { eglError("create output surface") }
-        check(EGL14.eglMakeCurrent(eglDisplay, eglSurface, eglSurface, eglContext)) { eglError("make current") }
+        parkingSurface = EGL14.eglCreatePbufferSurface(eglDisplay, config,
+            intArrayOf(EGL14.EGL_WIDTH, 1, EGL14.EGL_HEIGHT, 1, EGL14.EGL_NONE), 0)
+        check(parkingSurface != EGL14.EGL_NO_SURFACE) { eglError("create parking surface") }
+        createOutputSurface(output)
         GLES20.glGetIntegerv(GLES20.GL_MAX_TEXTURE_SIZE, count, 0)
         maxTextureSize = count[0]
         GLES20.glGetIntegerv(GLES20.GL_MAX_VIEWPORT_DIMS, maxViewport, 0)
-        check(EGL14.eglSwapInterval(eglDisplay, 1)) { eglError("set swap interval") }
         GLES20.glGenTextures(1, count, 0)
         texture = count[0]
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texture)
@@ -331,6 +416,36 @@ internal class LocalProjectionRenderer(
             return shader
         } catch (e: Exception) { GLES20.glDeleteShader(shader); throw e }
     }
+    private fun createOutputSurface(output: Surface) {
+        eglSurface = bindOutputSurface(
+            create = {
+                val surface = EGL14.eglCreateWindowSurface(eglDisplay, checkNotNull(eglConfig), output,
+                    intArrayOf(EGL14.EGL_NONE), 0)
+                checkOutput(surface != EGL14.EGL_NO_SURFACE, "create output surface")
+                eglSurface = surface
+                surface
+            },
+            bind = { surface ->
+                checkOutput(EGL14.eglMakeCurrent(eglDisplay, surface, surface, eglContext), "make current")
+                check(EGL14.eglSwapInterval(eglDisplay, 1)) { eglError("set swap interval") }
+            },
+            release = { surface ->
+                releaseOutputSurface(surface)
+                eglSurface = EGL14.EGL_NO_SURFACE
+            })
+    }
+    private fun releaseOutputSurface() {
+        if (eglSurface == EGL14.EGL_NO_SURFACE) return
+        releaseOutputSurface(eglSurface)
+        eglSurface = EGL14.EGL_NO_SURFACE
+    }
+    private fun releaseOutputSurface(surface: EGLSurface) {
+        check(EGL14.eglMakeCurrent(eglDisplay, parkingSurface, parkingSurface, eglContext)) { eglError("park context") }
+        check(EGL14.eglDestroySurface(eglDisplay, surface)) { eglError("detach output") }
+    }
+    private fun checkOutput(success: Boolean, operation: String) {
+        checkOutputResult(success, operation, EGL14::eglGetError)
+    }
     override fun close(done: (String?) -> Unit) {
         if (!closing.compareAndSet(false, true)) return
         val queued = handler.post {
@@ -360,6 +475,7 @@ internal class LocalProjectionRenderer(
             if (eglDisplay != EGL14.EGL_NO_DISPLAY) {
                 release { check(EGL14.eglMakeCurrent(eglDisplay, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT)) { eglError("unbind") } }
                 release { if (eglSurface != EGL14.EGL_NO_SURFACE) check(EGL14.eglDestroySurface(eglDisplay, eglSurface)) { eglError("destroy surface") } }
+                release { if (parkingSurface != EGL14.EGL_NO_SURFACE) check(EGL14.eglDestroySurface(eglDisplay, parkingSurface)) { eglError("destroy parking surface") } }
                 release { if (eglContext != EGL14.EGL_NO_CONTEXT) check(EGL14.eglDestroyContext(eglDisplay, eglContext)) { eglError("destroy context") } }
                 release { check(EGL14.eglTerminate(eglDisplay)) { eglError("terminate") } }
                 release { check(EGL14.eglReleaseThread()) { eglError("release thread") } }

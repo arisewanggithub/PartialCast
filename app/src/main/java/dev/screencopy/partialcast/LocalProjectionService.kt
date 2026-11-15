@@ -18,6 +18,7 @@ import android.os.Handler
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
+import android.os.SystemClock
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.WindowInsets
@@ -34,7 +35,14 @@ class LocalProjectionService : Service() {
     private var presentation: Presentation? = null
     private var retiring = false
     private var surfaceStarted = false
+    @Volatile private var outputGeneration = 0L
     private var destroying = false
+    private var reconnectCandidate: LocalDisplayTarget? = null
+    private var reconnectReadyAt = 0L
+    private val resumeAfterSettle = Runnable {
+        discovery.refresh()
+        owner?.let(::resumeOutput)
+    }
     private lateinit var discovery: LocalDisplayDiscovery
     private val screenOff = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -43,8 +51,13 @@ class LocalProjectionService : Service() {
         }
     }
     private val observer: () -> Unit = {
-        owner?.takeIf { !state.owns(it) || it.phase == LocalDisplayState.Phase.STOPPING }
-            ?.let { retire(it, state.message) }
+        owner?.let {
+            if (!state.owns(it) || it.phase == LocalDisplayState.Phase.STOPPING) retire(it, state.message)
+            else if (it.phase == LocalDisplayState.Phase.WAITING_DISPLAY) {
+                pauseOutput(it)
+                resumeOutput(it)
+            }
+        }
     }
     override fun onCreate() {
         super.onCreate()
@@ -87,6 +100,7 @@ class LocalProjectionService : Service() {
             session.cleanupPending = true
             retiring = false
             surfaceStarted = false
+            outputAttached = true
             val activity = HomeActivity.host(session)
                 ?: error("Local control screen is no longer visible. Press Play again.")
             check(activity.display?.displayId == android.view.Display.DEFAULT_DISPLAY) {
@@ -102,54 +116,27 @@ class LocalProjectionService : Service() {
             projection = capture
             val current = rendererFactory(capture, session.options, PhoneGeometry(applicationContext)::read,
                 { reason -> main.post { if (owner === session) retire(session, reason) } },
-                { detail -> main.post {
-                    if (owner === session && !retiring) {
-                        if (detail.startsWith("Playing:")) state.playing(session, detail)
-                        else state.detail(session, detail)
+                { detail, rendererGeneration ->
+                    val generation = outputGeneration
+                    main.post {
+                        if (owner === session && !retiring && generation == outputGeneration &&
+                            renderer?.outputGeneration == rendererGeneration) {
+                            if (detail.startsWith("Playing:")) state.playing(session, detail)
+                            else state.detail(session, detail)
+                        }
                     }
-                } },
-                { id -> main.post { if (owner === session && !retiring) captureDisplayId = id } })
+                },
+                { id -> main.post { if (owner === session && !retiring) captureDisplayId = id } },
+                { reason, rendererGeneration ->
+                    val generation = outputGeneration
+                    main.post {
+                        if (owner === session && !retiring && generation == outputGeneration &&
+                            renderer?.outputGeneration == rendererGeneration) outputLost(session, reason)
+                    }
+                })
             renderer = current
             projection = null // Renderer now owns projection lifetime, including failed initialization.
-            val output = object : Presentation(activity, target) {
-                override fun onCreate(savedInstanceState: android.os.Bundle?) {
-                    super.onCreate(savedInstanceState)
-                    val view = SurfaceView(context)
-                    setContentView(view)
-                    window?.setBackgroundDrawableResource(android.R.color.black)
-                    window?.setDecorFitsSystemWindows(false)
-                    window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                    window?.insetsController?.let {
-                        it.hide(WindowInsets.Type.systemBars())
-                        it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                    }
-                    view.holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(holder: SurfaceHolder) = Unit
-                        override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
-                            if (owner !== session || retiring || !state.owns(session)) return
-                            if (!surfaceStarted) {
-                                surfaceStarted = true
-                                current.start(holder.surface, width, height)
-                            } else current.resizeOutput(width, height)
-                        }
-                        override fun surfaceDestroyed(holder: SurfaceHolder) {
-                            if (owner === session && !retiring) retire(session, "Presentation surface lost. Press Play to start a new session.")
-                        }
-                    })
-                }
-            }
-            presentation = output
-            output.setOnDismissListener {
-                if (owner === session && !retiring) retire(session, "Presentation dismissed by Android. Press Play again.")
-            }
-            output.show()
-            output.window?.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
-            main.postDelayed({
-                if (owner === session && !retiring && session.phase != LocalDisplayState.Phase.PLAYING)
-                    retire(session, if (!surfaceStarted)
-                        "Display did not provide a rendering surface. Check the adapter/display and press Play again."
-                    else "Android did not provide a captured frame/content-size callback within 10 seconds. Check capture permission/display and press Play again.")
-            }, 10_000)
+            showOutput(session, activity, target, current)
         } catch (e: Exception) {
             android.util.Log.e("PartialCast", "Could not start local presentation", e)
             val reason = if (e is WindowManager.InvalidDisplayException)
@@ -161,15 +148,130 @@ class LocalProjectionService : Service() {
         }
         return START_NOT_STICKY
     }
-    private fun notification(token: Long): Notification {
+    private fun showOutput(session: LocalDisplayState.Session, activity: HomeActivity,
+        target: android.view.Display, current: ProjectionOutput) {
+        outputGeneration++
+        val output = object : Presentation(activity, target) {
+            override fun onCreate(savedInstanceState: android.os.Bundle?) {
+                super.onCreate(savedInstanceState)
+                val outputWindow = this
+                val view = SurfaceView(context)
+                setContentView(view)
+                window?.setBackgroundDrawableResource(android.R.color.black)
+                window?.setDecorFitsSystemWindows(false)
+                window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+                window?.insetsController?.let {
+                    it.hide(WindowInsets.Type.systemBars())
+                    it.systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                }
+                view.holder.addCallback(object : SurfaceHolder.Callback {
+                    override fun surfaceCreated(holder: SurfaceHolder) = Unit
+                    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+                        if (presentation !== outputWindow || owner !== session || retiring || !state.owns(session)) return
+                        if (!surfaceStarted) {
+                            surfaceStarted = true
+                            current.start(holder.surface, width, height)
+                        } else if (!outputAttached) {
+                            outputAttached = true
+                            current.attachOutput(holder.surface, width, height)
+                        } else current.resizeOutput(width, height)
+                    }
+                    override fun surfaceDestroyed(holder: SurfaceHolder) {
+                        if (presentation === outputWindow && owner === session && !retiring)
+                            outputLost(session, "Presentation surface lost. Press Play to start a new session.")
+                    }
+                })
+            }
+        }
+        presentation = output
+        output.setOnDismissListener {
+            if (presentation === output && owner === session && !retiring)
+                outputLost(session, "Presentation dismissed by Android. Press Play again.")
+        }
+        output.show()
+        output.window?.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.MATCH_PARENT)
+        main.postDelayed({
+            if (presentation === output && owner === session && !retiring &&
+                session.phase != LocalDisplayState.Phase.PLAYING)
+                retire(session, if (!surfaceStarted)
+                    "Display did not provide a rendering surface. Check the adapter/display and press Play again."
+                else "Android did not provide a captured frame/content-size callback within 10 seconds. Check capture permission/display and press Play again.")
+        }, 10_000)
+    }
+    private var outputAttached = true
+    private fun outputLost(session: LocalDisplayState.Session, reason: String) {
+        val target = getSystemService(DisplayManager::class.java).getDisplay(session.target.id)
+        if (target == null || !LocalDisplayDiscovery.eligible(target, captureDisplayId)) {
+            if (state.waitForDisplay(session)) return
+        }
+        retire(session, reason)
+    }
+    private fun pauseOutput(session: LocalDisplayState.Session) {
+        if (owner !== session || retiring || presentation == null) return
+        android.util.Log.i("PartialCast", "local_projection event=pause_display")
+        outputGeneration++
+        renderer?.detachOutput()
+        outputAttached = false
+        getSystemService(NotificationManager::class.java).notify(2, notification(session.token, paused = true))
+        val old = presentation
+        presentation = null
+        try { old?.dismiss() } catch (e: Exception) {
+            android.util.Log.e("PartialCast", "Could not dismiss disconnected presentation", e)
+            retire(session, "Disconnected display window cleanup failed: ${e.message}")
+        }
+    }
+    private fun resumeOutput(session: LocalDisplayState.Session) {
+        if (owner !== session || retiring || session.phase != LocalDisplayState.Phase.WAITING_DISPLAY) return
+        val candidate = state.reconnectTarget(session)
+        val target = candidate?.let { getSystemService(DisplayManager::class.java).getDisplay(it.id) }
+        if (candidate == null || target == null || !LocalDisplayDiscovery.eligible(target, captureDisplayId)) {
+            cancelReconnect()
+            return
+        }
+        val size = candidate.size
+        if (size == null || size.width <= 0 || size.height <= 0) {
+            cancelReconnect()
+            return
+        }
+        if (LocalDisplayDiscovery.target(target) != candidate) {
+            discovery.refresh()
+            return
+        }
+        if (candidate != reconnectCandidate) {
+            cancelReconnect()
+            reconnectCandidate = candidate
+            reconnectReadyAt = SystemClock.uptimeMillis() + 5_000
+            main.postDelayed(resumeAfterSettle, 5_000)
+            return
+        }
+        if (SystemClock.uptimeMillis() < reconnectReadyAt) return
+        val activity = HomeActivity.host(session, requireResumed = false) ?: return
+        val current = renderer ?: return
+        if (!state.reconnect(session, candidate)) return
+        cancelReconnect()
+        try {
+            getSystemService(NotificationManager::class.java).notify(2, notification(session.token))
+            showOutput(session, activity, target, current)
+        } catch (e: Exception) {
+            android.util.Log.e("PartialCast", "Could not resume local presentation", e)
+            retire(session, "Could not resume local presentation: ${e.message}. Press Play for new consent.")
+        }
+    }
+    private fun cancelReconnect() {
+        main.removeCallbacks(resumeAfterSettle)
+        reconnectCandidate = null
+        reconnectReadyAt = 0L
+    }
+    private fun notification(token: Long, paused: Boolean = false): Notification {
         val stop = PendingIntent.getService(this, 2,
             Intent(this, LocalProjectionService::class.java).setAction("stop")
                 .putExtra("localSession", token).setData(android.net.Uri.parse("partialcast://stop/$token")),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return Notification.Builder(this, "local-presentation")
             .setSmallIcon(R.drawable.ic_partialcast_foreground)
-            .setContentTitle("PartialCast is sharing your phone screen")
-            .setContentText("Local presentation; system audio routing unchanged")
+            .setContentTitle(if (paused) "PartialCast sharing is paused" else "PartialCast is sharing your phone screen")
+            .setContentText(if (paused) "Reconnect the display to resume, or Stop"
+                else "Local presentation; system audio routing unchanged")
             .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, HomeActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
@@ -178,6 +280,7 @@ class LocalProjectionService : Service() {
     private fun retire(session: LocalDisplayState.Session, reason: String) {
         if (owner !== session || retiring) return
         retiring = true
+        cancelReconnect()
         android.util.Log.i("PartialCast", "local_projection event=stop reason=$reason")
         state.stop(session, reason)
         val current = renderer
@@ -248,9 +351,12 @@ class LocalProjectionService : Service() {
                 if (!session.cleanupPending) LocalDisplayState.shared.finish(session, reason)
             }
         }
+        internal fun resume(session: LocalDisplayState.Session) {
+            running.get()?.resumeOutput(session)
+        }
         internal var rendererFactory: (
             MediaProjection, LocalCaptureOptions, () -> PhoneSnapshot,
-            (String) -> Unit, (String) -> Unit, (Int) -> Unit
+            (String) -> Unit, (String, Long) -> Unit, (Int) -> Unit, (String, Long) -> Unit
         ) -> ProjectionOutput = ::LocalProjectionRenderer
     }
 }

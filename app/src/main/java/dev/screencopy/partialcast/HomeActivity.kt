@@ -5,6 +5,7 @@ import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.ActivityNotFoundException
 import android.content.res.Configuration
 import android.net.Uri
@@ -27,6 +28,7 @@ import android.window.OnBackInvokedCallback
 import android.window.OnBackInvokedDispatcher
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -44,7 +46,11 @@ class HomeActivity : Activity() {
     private var consentRequest: Pair<Int, LocalDisplayState.Session>? = null
     private lateinit var discovery: LocalDisplayDiscovery
     private lateinit var store: CropStore
+    private lateinit var capturePreferences: SharedPreferences
     private var stopObservingCrop: (() -> Unit)? = null
+    private val autoResumeObserver = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (!isDestroyed && (key == null || key == "autoResume")) refreshAutoResume()
+    }
     private lateinit var phone: PhoneGeometry
     private lateinit var status: TextView
     private lateinit var cropSummary: TextView
@@ -52,6 +58,7 @@ class HomeActivity : Activity() {
     private lateinit var play: Button
     private lateinit var stop: Button
     private lateinit var edit: Button
+    private lateinit var autoResume: CheckBox
     private var targets: List<LocalDisplayTarget> = emptyList()
     private lateinit var updateCheck: LaunchUpdateCheck
     private var updateDialog: AlertDialog? = null
@@ -73,6 +80,7 @@ class HomeActivity : Activity() {
         play.isEnabled = active == null && targets.isNotEmpty()
         displays.isEnabled = active == null
         edit.isEnabled = active == null
+        autoResume.isEnabled = active == null
         stop.isEnabled = active != null && active.phase != LocalDisplayState.Phase.STOPPING
         active?.takeIf { it.phase == LocalDisplayState.Phase.STOPPING }
             ?.let { LocalProjectionService.stop(it, state.message) }
@@ -87,6 +95,7 @@ class HomeActivity : Activity() {
             onBackInvokedDispatcher.registerOnBackInvokedCallback(OnBackInvokedDispatcher.PRIORITY_DEFAULT, callback)
         }
         store = CropStore(this)
+        capturePreferences = getSharedPreferences("capture", MODE_PRIVATE)
         phone = PhoneGeometry(this)
         val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         val padding = (20 * resources.displayMetrics.density).toInt()
@@ -103,6 +112,11 @@ class HomeActivity : Activity() {
         edit = Button(this).apply { text = "Edit crop"; setOnClickListener { editCrop() } }.also(root::addView)
         root.addView(TextView(this).apply { text = "Presentation display" })
         displays = Spinner(this).also(root::addView)
+        autoResume = CheckBox(this).apply {
+            text = "Automatically resume when the same display reconnects"
+            isChecked = capturePreferences.getBoolean("autoResume", false)
+            setOnClickListener { saveAutoResume() }
+        }.also(root::addView)
         play = Button(this).apply { text = "Play"; setOnClickListener { beginPlay() } }.also(root::addView)
         stop = Button(this).apply {
             text = "Stop"
@@ -112,7 +126,10 @@ class HomeActivity : Activity() {
         root.addView(TextView(this).apply {
             text = "Full-resolution phone capture; aspect-fit black bars. No captured audio: Android controls normal system/HDMI audio routing.\n\n" +
                 "Home and app switching keep a started session running if Android keeps its window available. " +
-                "Stop, Back, closing this Activity, removing the task, unplugging the display or system capture Stop ends it. " +
+                "With automatic resume enabled, display disconnect pauses sharing; reconnect resumes it after five seconds of stable resolution, even while another app is foregrounded. " +
+                "This setting is saved until you turn it off; every Play still requires screen-capture consent. " +
+                "Targets are matched by name and display flags, not verified hardware identity; leave this off if another screen could use the same name. " +
+                "Stop, Back, closing this Activity, removing the task or system capture Stop ends it. " +
                 "Secure content may be blank. No cross-app exclusivity is enforced."
         })
         root.addView(LinearLayout(this).apply {
@@ -133,6 +150,7 @@ class HomeActivity : Activity() {
         })
         refreshCrop()
         stopObservingCrop = store.observe { if (!isDestroyed) refreshCrop() }
+        capturePreferences.registerOnSharedPreferenceChangeListener(autoResumeObserver)
         state.observe(observer)
         discovery = LocalDisplayDiscovery(this, state::updateTargets)
         discovery.start()
@@ -151,6 +169,21 @@ class HomeActivity : Activity() {
         } catch (e: IllegalArgumentException) {
             report("Saved crop is invalid: ${e.message}. Edit it before Play.")
         }
+    }
+
+    private fun refreshAutoResume() {
+        autoResume.isChecked = capturePreferences.getBoolean("autoResume", false)
+    }
+
+    private fun saveAutoResume() {
+        val previous = capturePreferences.getBoolean("autoResume", false)
+        if (capturePreferences.edit().putBoolean("autoResume", autoResume.isChecked).commit()) return
+        // A failed commit still changes memory; restore the effective setting before reporting it.
+        val restored = capturePreferences.edit().putBoolean("autoResume", previous).commit()
+        refreshAutoResume()
+        if (!restored) Log.e("PartialCast", "Automatic resume save and disk rollback failed")
+        report(if (restored) "Could not save automatic resume. The previous setting remains active."
+            else "Could not save automatic resume; disk rollback is unconfirmed. Restart the app and check the setting.")
     }
 
     @Suppress("DEPRECATION")
@@ -318,7 +351,7 @@ class HomeActivity : Activity() {
             val crop = store.load()
             crop.validate(phone.read())
             val target = targets.getOrNull(displays.selectedItemPosition) ?: error("Choose an available presentation display")
-            session = state.reserve(target.id, crop.options())
+            session = state.reserve(target.id, crop.options(), autoResume.isChecked)
             host = WeakReference(this)
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
                 val request = nextRequestCode()
@@ -390,9 +423,11 @@ class HomeActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refreshCrop()
+        refreshAutoResume()
         resumed = true
         continueNotificationConsent()
         startConsentedSession()
+        session?.takeIf(state::owns)?.let(LocalProjectionService::resume)
         showUpdateIfIdle()
     }
     override fun onPause() { resumed = false; super.onPause() }
@@ -432,6 +467,7 @@ class HomeActivity : Activity() {
         session?.takeIf(state::owns)?.let { LocalProjectionService.stop(it, "Control Activity closed; press Play for new consent.") }
         stopObservingCrop?.invoke()
         stopObservingCrop = null
+        capturePreferences.unregisterOnSharedPreferenceChangeListener(autoResumeObserver)
         state.removeObserver(observer)
         discovery.stop()
         if (host.get() === this) host.clear()
@@ -490,7 +526,8 @@ class HomeActivity : Activity() {
             return ++requestSequence
         }
         private var host = WeakReference<HomeActivity>(null)
-        internal fun host(session: LocalDisplayState.Session): HomeActivity? =
-            host.get()?.takeIf { it.session === session && it.resumed && !it.isFinishing && !it.isDestroyed }
+        internal fun host(session: LocalDisplayState.Session, requireResumed: Boolean = true): HomeActivity? =
+            host.get()?.takeIf { it.session === session && (!requireResumed || it.resumed) &&
+                !it.isFinishing && !it.isDestroyed }
     }
 }
