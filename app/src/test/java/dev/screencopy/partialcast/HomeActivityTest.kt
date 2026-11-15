@@ -3,6 +3,7 @@ package dev.screencopy.partialcast
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
@@ -10,6 +11,7 @@ import android.os.Looper
 import android.view.Display
 import android.view.View
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.TextView
 import android.widget.LinearLayout
@@ -75,6 +77,7 @@ class HomeActivityTest {
         HomeActivity.updateFactory = { noUpdateCheck(it) }
         val app = RuntimeEnvironment.getApplication()
         app.getSharedPreferences("crop", 0).edit().clear().commit()
+        app.getSharedPreferences("capture", 0).edit().clear().commit()
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         val manager = app.getSystemService(DisplayManager::class.java)
         output = checkNotNull(manager.createVirtualDisplay("Test presentation", 1920, 1080, 320, null,
@@ -115,6 +118,78 @@ class HomeActivityTest {
         assertSame(session, state.active)
         assertNull(shadowOf(controller.get()).nextStartedActivityForResult)
         assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
+    }
+    @Test fun automaticResumePersistsAcrossNewHomesUntilUncheckedAndAppliesToNextPlay() {
+        LocalProjectionService.stop(session, "Test preference edit")
+        val setting = ReflectionHelpers.getField<CheckBox>(controller.get(), "autoResume")
+        assertFalse(setting.isChecked)
+        setting.performClick()
+        controller.pause().stop().destroy()
+        destroyed = true
+        val reopened = anotherHome()
+        try {
+            val saved = ReflectionHelpers.getField<CheckBox>(reopened.get(), "autoResume")
+            assertTrue(saved.isChecked)
+            reopened.get().beginPlay()
+            val enabled = checkNotNull(state.active)
+            assertTrue(enabled.autoResume)
+            LocalProjectionService.stop(enabled, "Test preference edit")
+            saved.performClick()
+            assertFalse(saved.isChecked)
+        } finally { reopened.pause().stop().destroy() }
+        val unchecked = anotherHome()
+        try {
+            assertFalse(ReflectionHelpers.getField<CheckBox>(unchecked.get(), "autoResume").isChecked)
+            unchecked.get().beginPlay()
+            assertFalse(checkNotNull(state.active).autoResume)
+        } finally { unchecked.pause().stop().destroy() }
+    }
+    @Test fun savedAutomaticResumeChangesRefreshOtherHomeWithoutStartingCapture() {
+        LocalProjectionService.stop(session, "Test preference edit")
+        val other = anotherHome()
+        try {
+            val setting = ReflectionHelpers.getField<CheckBox>(controller.get(), "autoResume")
+            val observed = ReflectionHelpers.getField<CheckBox>(other.get(), "autoResume")
+            setting.performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertTrue(observed.isChecked)
+            setting.performClick()
+            shadowOf(Looper.getMainLooper()).idle()
+            assertFalse(observed.isChecked)
+            assertNull(state.active)
+            assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
+        } finally { other.pause().stop().destroy() }
+    }
+    @Test fun failedAutomaticResumeSaveRestoresCheckboxAndPreviousEffectivePreference() {
+        LocalProjectionService.stop(session, "Test preference edit")
+        val preferences = RuntimeEnvironment.getApplication().getSharedPreferences("capture", 0)
+        preferences.edit().putBoolean("autoResume", true).commit()
+        shadowOf(Looper.getMainLooper()).idle()
+        var fail = true
+        val failing = object : SharedPreferences by preferences {
+            override fun edit(): SharedPreferences.Editor {
+                val editor = preferences.edit()
+                return object : SharedPreferences.Editor by editor {
+                    override fun putBoolean(key: String, value: Boolean): SharedPreferences.Editor {
+                        editor.putBoolean(key, value)
+                        return this
+                    }
+                    override fun commit(): Boolean {
+                        val committed = editor.commit()
+                        if (fail) { fail = false; return false }
+                        return committed
+                    }
+                }
+            }
+        }
+        ReflectionHelpers.setField(controller.get(), "capturePreferences", failing)
+        val setting = ReflectionHelpers.getField<CheckBox>(controller.get(), "autoResume")
+        setting.performClick()
+        assertTrue(setting.isChecked)
+        assertTrue(preferences.getBoolean("autoResume", false))
+        assertTrue(ReflectionHelpers.getField<TextView>(controller.get(), "status").text.contains("Could not save"))
+        controller.get().beginPlay()
+        assertTrue(checkNotNull(state.active).autoResume)
     }
     @Suppress("DEPRECATION")
     @Test fun homeDisplaysActualInstalledVersionNameWithoutBuildCode() {

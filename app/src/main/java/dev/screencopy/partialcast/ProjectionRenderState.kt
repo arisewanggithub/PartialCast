@@ -55,7 +55,11 @@ internal class ProjectionFrameState {
         pending = false
         return update
     }
-    fun imageUpdated(timestamp: Long) {
+    fun imageUpdated(timestamp: Long, outputAttached: Boolean = true) {
+        if (!outputAttached) {
+            imageDiscarded(timestamp)
+            return
+        }
         if (imageTimestamp != timestamp) acquired = true
         imageTimestamp = timestamp
     }

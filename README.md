@@ -20,7 +20,7 @@ or ScrcpyRecv and does not interact with either app.
    Choose it on Home. Targets can be wired, wireless, simulated or internal;
    the app does not promise that every target is HDMI. Some phones, adapters
    and USB cables never expose a usable secondary display.
-2. Optionally choose **Edit crop**. The only saved/configurable parameters are
+2. Optionally choose **Edit crop**. The saved/configurable crop parameters are
    **width, height, X and Y**, in pixels of the phone's **natural/default
    orientation**, not the current rotated orientation.
    All four zero means the whole phone. Otherwise width/height must be positive,
@@ -39,12 +39,25 @@ or ScrcpyRecv and does not interact with either app.
    This is not a screenshot or drag editor and does not access screen pixels.
 3. Press **Play**, optionally allow normal notification permission, then approve
    Android screen-capture consent. Every Play requires fresh consent.
+   Before Play, optionally enable **Automatically resume when the same display
+   reconnects** (off by default, saved until manually unchecked). Once playing, disconnect pauses
+   output and detaches the capture input while retaining the consented session
+   and foreground notification. Reconnect waits for five seconds of unchanged
+   target resolution/orientation (changes restart the interval), then resumes
+   without new consent even while another app is foregrounded. The original
+   control Activity must remain alive; returning to Home is not required.
+   Targets are matched by a unique display name and flags, not a persistent
+   hardware identity. Identically named targets cannot be distinguished; avoid
+   this option if another screen could use the same name/flags. Ambiguous matches
+   remain paused. Stop cancels the pending resume.
 4. **Stop** in Home or the foreground notification. Home/app switching does not
    itself stop an existing session. Back or destruction/recreation of the
    Activity that actually owns the session,
-   task removal, output removal/surface loss/window dismissal, screen off/lock,
+   task removal, surface loss/window dismissal while the target remains connected, screen off/lock,
    projection revocation or service destruction ends the session.
-   Reconnection never starts capture.
+   Display removal also ends it unless automatic resume was enabled and output
+   had already played. Disconnect during consent/startup still requires Play.
+   A terminated session never restarts automatically.
 
 The fullscreen output follows actual source orientation with aspect-fit black
 bars, never stretching or forced landscape. Full-resolution capture is used;
@@ -62,7 +75,7 @@ See [PRIVACY.md](PRIVACY.md) and [DESIGN.md](DESIGN.md). Internet permission is
 used only for anonymous GitHub release metadata checks. There is no microphone,
 installer, overlay, privileged capture or root permission. No encoder/decoder,
 network receiver, bitmap readback, analytics, APK downloader or capture files
-are included. Only the four crop integers are stored, with
+are included. Only the four crop integers and automatic-resume preference are stored, with
 app backup disabled. The app cannot enforce exclusivity against another app.
 
 Android 14+ always requests the default phone display with public
@@ -281,9 +294,19 @@ fixtures do not simulate Android 17's runtime or establish stability.
   and there is no new consent or virtual-display creation in that session.
   Lifecycle logs expose only dimensions/rotation/stop reasons, never pixels.
 - Return via launcher/notification without restart. Back, close/recreate the
-  Activity, remove task, lock/screen off, revoke capture, disconnect/reconnect,
+  Activity, remove task, lock/screen off, revoke capture, disconnect/reconnect with automatic resume disabled,
   dismiss output and lose its surface. Each terminal event must stop safely;
   replug remains idle. Android 14+ content resize must not permit wrong crops.
+- Enable automatic resume before Play. Disconnect/reconnect repeatedly, including
+  a new Android display ID and a rotated phone: confirm output pauses and resumes
+  only after five seconds of unchanged output resolution/orientation, with the
+  same crop, one capture virtual display and no new consent. Change resolution
+  during negotiation and confirm the five-second interval restarts. Reconnect
+  while Home is backgrounded must resume without bringing it forward or
+  interrupting the phone's foreground app. Unrelated or ambiguously
+  named targets must not resume. Stop in Home/notification or lock while paused
+  must release the session and leave later reconnects idle. Check real EGL
+  surface teardown/recreation on the exact adapter/OEM; JVM fixtures inject GPU.
 - Repeated Play/Stop and cleanup failure: fresh capture stays blocked through
   cleanup; an unconfirmed/stalled cleanup asks for an **app process restart**.
   This app does not stop or manipulate other casting apps.

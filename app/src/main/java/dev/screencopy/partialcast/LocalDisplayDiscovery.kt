@@ -1,6 +1,7 @@
 package dev.screencopy.partialcast
 
 import android.content.Context
+import android.graphics.Point
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
@@ -24,12 +25,19 @@ internal class LocalDisplayDiscovery(context: Context, private val changed: (Lis
         attached = false
         manager.unregisterDisplayListener(listener)
     }
-    private fun refresh() {
+    fun refresh() {
         if (attached) changed(manager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
             .filter { eligible(it, LocalProjectionService.captureDisplayId) }
-            .map { LocalDisplayTarget(it.displayId, it.name) })
+            .map(::target))
     }
     companion object {
+        @Suppress("DEPRECATION")
+        fun target(display: Display): LocalDisplayTarget {
+            val size = Point()
+            display.getRealSize(size)
+            return LocalDisplayTarget(display.displayId, display.name, display.flags,
+                VideoSize(size.x, size.y), display.rotation)
+        }
         fun eligible(display: Display, excluded: Int) = display.isValid &&
             display.displayId != Display.DEFAULT_DISPLAY && display.displayId != excluded &&
             display.flags and Display.FLAG_PRESENTATION != 0 &&

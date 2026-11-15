@@ -46,12 +46,19 @@ class LocalProjectionServiceTest {
                 Shadow.newInstanceOf(MediaProjection::class.java) else null
     }
     private class Output : ProjectionOutput {
+        override var outputGeneration = 0L
         var closeCalls = 0
         var starts = 0
+        var detaches = 0
+        var attaches = 0
         val outputSizes = ArrayList<VideoSize>()
         var completed: ((String?) -> Unit)? = null
         override fun start(surface: Surface, width: Int, height: Int) { starts++; outputSizes.add(VideoSize(width, height)) }
         override fun resizeOutput(width: Int, height: Int) { outputSizes.add(VideoSize(width, height)) }
+        override fun detachOutput() { detaches++; outputGeneration++ }
+        override fun attachOutput(surface: Surface, width: Int, height: Int) {
+            attaches++; outputGeneration++; outputSizes.add(VideoSize(width, height))
+        }
         override fun phoneChanged() = Unit
         override fun close(done: (String?) -> Unit) { closeCalls++; completed = done }
     }
@@ -63,7 +70,8 @@ class LocalProjectionServiceTest {
     private lateinit var display: VirtualDisplay
     private lateinit var session: LocalDisplayState.Session
     private lateinit var output: Output
-    private lateinit var progress: (String) -> Unit
+    private lateinit var progress: (String, Long) -> Unit
+    private lateinit var outputUnavailable: (String, Long) -> Unit
     private lateinit var failed: (String) -> Unit
     private lateinit var start: Intent
     private var serviceDestroyed = false
@@ -73,6 +81,7 @@ class LocalProjectionServiceTest {
         HomeActivity.updateFactory = { noUpdateCheck(it) }
         val app = RuntimeEnvironment.getApplication()
         app.getSharedPreferences("crop", 0).edit().clear().commit()
+        app.getSharedPreferences("capture", 0).edit().clear().commit()
         shadowOf(app).grantPermissions(Manifest.permission.POST_NOTIFICATIONS)
         val manager = app.getSystemService(DisplayManager::class.java)
         display = checkNotNull(manager.createVirtualDisplay("Fixture", 1920, 1080, 320, null,
@@ -82,16 +91,18 @@ class LocalProjectionServiceTest {
         ReflectionHelpers.setField(activity.get(), "mBase",
             activity.get().baseContext.createDisplayContext(manager.getDisplay(Display.DEFAULT_DISPLAY)))
         activity.create().start().resume().visible()
+        ReflectionHelpers.getField<android.widget.CheckBox>(activity.get(), "autoResume").isChecked = true
         activity.get().beginPlay()
         session = checkNotNull(state.active)
         val consent = checkNotNull(shadowOf(activity.get()).nextStartedActivityForResult).intent
         shadowOf(activity.get()).receiveResult(consent, Activity.RESULT_OK, Intent("fixture-consent"))
         start = checkNotNull(shadowOf(app).nextStartedService)
         output = Output()
-        LocalProjectionService.rendererFactory = { _, _, _, failure, detail, _ ->
+        LocalProjectionService.rendererFactory = { _, _, _, failure, detail, _, unavailable ->
             factoryCalls++
             failed = failure
             progress = detail
+            outputUnavailable = unavailable
             output
         }
         service = Robolectric.buildService(LocalProjectionService::class.java).create()
@@ -99,11 +110,38 @@ class LocalProjectionServiceTest {
         assertTrue("Service must reach injected GPU boundary: ${state.message}", ::progress.isInitialized)
     }
     private fun frame() {
-        progress("Playing: simulated frame")
+        progress("Playing: simulated frame", output.outputGeneration)
         shadowOf(Looper.getMainLooper()).idle()
     }
     private fun complete(error: String? = null) {
         checkNotNull(output.completed)(error)
+        shadowOf(Looper.getMainLooper()).idle()
+    }
+    private fun outputView(): android.view.SurfaceView {
+        val presentation = checkNotNull(ReflectionHelpers.getField<android.app.Presentation?>(service.get(), "presentation")) {
+            "Expected output window; phase=${session.phase}, message=${state.message}, targets=${state.targets}"
+        }
+        return presentation.findViewById<android.view.ViewGroup>(android.R.id.content)
+            .getChildAt(0) as android.view.SurfaceView
+    }
+    private fun provideSurface() {
+        val view = outputView()
+        val texture = android.graphics.SurfaceTexture(0)
+        val surface = Surface(texture)
+        val holder = object : android.view.SurfaceHolder by view.holder {
+            override fun getSurface() = surface
+        }
+        try {
+            shadowOf(view).fakeSurfaceHolder.callbacks.toList().forEach {
+                it.surfaceChanged(holder, 0, 1920, 1080)
+            }
+        } finally { surface.release(); texture.release() }
+    }
+    private fun reconnectDisplay() {
+        display = checkNotNull(RuntimeEnvironment.getApplication().getSystemService(DisplayManager::class.java)
+            .createVirtualDisplay("Fixture", 1920, 1080, 320, null,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_PUBLIC or DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION or
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_OWN_CONTENT_ONLY))
         shadowOf(Looper.getMainLooper()).idle()
     }
     @After fun cleanup() {
@@ -127,6 +165,144 @@ class LocalProjectionServiceTest {
         activity.start().resume()
         assertSame(session, state.active)
         assertNull(shadowOf(activity.get()).nextStartedActivityForResult)
+    }
+    @Test fun reconnectReusesOwnedRendererAndIgnoresOldWindowCallbacks() {
+        provideSurface()
+        frame()
+        val oldView = outputView()
+        val oldCallbacks = shadowOf(oldView).fakeSurfaceHolder.callbacks.toList()
+        val oldId = display.display.displayId
+        display.release()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(LocalDisplayState.Phase.WAITING_DISPLAY, session.phase)
+        assertEquals(1, output.detaches)
+        assertEquals(0, output.closeCalls)
+        frame()
+        assertEquals(LocalDisplayState.Phase.WAITING_DISPLAY, session.phase)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+        assertEquals(0, output.closeCalls)
+        reconnectDisplay()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(4_999))
+        assertEquals(LocalDisplayState.Phase.WAITING_DISPLAY, session.phase)
+        assertEquals(0, output.attaches)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
+        assertNotEquals(oldId, session.target.id)
+        provideSurface()
+        oldCallbacks.forEach { it.surfaceDestroyed(oldView.holder) }
+        frame()
+        assertSame(session, state.active)
+        assertEquals(LocalDisplayState.Phase.PLAYING, session.phase)
+        assertEquals(1, output.starts)
+        assertEquals(1, output.attaches)
+        assertEquals(1, factoryCalls)
+        assertEquals(0, output.closeCalls)
+        assertNull(shadowOf(activity.get()).nextStartedActivityForResult)
+        assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
+    }
+    @Test fun backgroundReconnectResumesWithoutLaunchingHomeAndNotificationStopCancelsResume() {
+        provideSurface()
+        frame()
+        // Remove the original Play consent launch before checking reconnect launches.
+        shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity
+        activity.pause().stop()
+        display.release()
+        shadowOf(Looper.getMainLooper()).idle()
+        reconnectDisplay()
+        assertEquals(LocalDisplayState.Phase.WAITING_DISPLAY, session.phase)
+        assertEquals(0, output.attaches)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(4_999))
+        assertEquals(LocalDisplayState.Phase.WAITING_DISPLAY, session.phase)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
+        assertEquals(LocalDisplayState.Phase.STARTING, session.phase)
+        assertNull("The original host stays backgrounded", HomeActivity.host(session))
+        assertSame(activity.get(), HomeActivity.host(session, requireResumed = false))
+        provideSurface()
+        frame()
+        assertEquals(LocalDisplayState.Phase.PLAYING, session.phase)
+        assertEquals(1, output.attaches)
+        assertEquals(1, output.starts)
+        assertEquals(1, factoryCalls)
+        assertNull(shadowOf(activity.get()).nextStartedActivityForResult)
+        assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedActivity)
+        assertNull(shadowOf(RuntimeEnvironment.getApplication()).nextStartedService)
+        display.release()
+        shadowOf(Looper.getMainLooper()).idle()
+        reconnectDisplay()
+        service.get().onStartCommand(Intent().setAction("stop").putExtra("localSession", session.token), 0, 2)
+        assertEquals(1, output.closeCalls)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
+        complete()
+        assertNull(state.active)
+        assertEquals(1, output.attaches)
+        assertEquals(1, factoryCalls)
+    }
+    @Test fun resolutionNegotiationResetsQuietIntervalButDuplicateReportsDoNot() {
+        provideSurface()
+        frame()
+        display.release()
+        shadowOf(Looper.getMainLooper()).idle()
+        reconnectDisplay()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(3))
+        display.resize(1280, 720, 320)
+        shadowOf(Looper.getMainLooper()).idle()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(4_999))
+        assertEquals(LocalDisplayState.Phase.WAITING_DISPLAY, session.phase)
+        state.updateTargets(state.targets)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(1))
+        assertEquals("Expected stable reconnect; message=${state.message}, targets=${state.targets}",
+            LocalDisplayState.Phase.STARTING, session.phase)
+        assertEquals(VideoSize(1280, 720), session.target.size)
+        provideSurface()
+        frame()
+        assertEquals(1, output.attaches)
+        assertEquals(1, output.starts)
+        assertEquals(0, output.closeCalls)
+    }
+    @Test fun oldDrawProgressCannotMarkReplacementPlayingOrBypassItsWatchdog() {
+        provideSurface()
+        frame()
+        val oldGeneration = output.outputGeneration
+        display.release()
+        shadowOf(Looper.getMainLooper()).idle()
+        reconnectDisplay()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
+        provideSurface()
+        progress("Playing: delayed old swap", oldGeneration)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(LocalDisplayState.Phase.STARTING, session.phase)
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
+        assertEquals(1, output.closeCalls)
+        complete()
+        assertNull(state.active)
+    }
+    @Test fun oldOutputFailureCannotRetireReplacementWindow() {
+        provideSurface()
+        frame()
+        val oldGeneration = output.outputGeneration
+        display.release()
+        shadowOf(Looper.getMainLooper()).idle()
+        reconnectDisplay()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(5))
+        provideSurface()
+        outputUnavailable("Delayed old output failure", oldGeneration)
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(LocalDisplayState.Phase.STARTING, session.phase)
+        assertEquals(0, output.closeCalls)
+        frame()
+        assertEquals(LocalDisplayState.Phase.PLAYING, session.phase)
+    }
+    @Test fun screenOffWhileDisconnectedEndsRetainedProjection() {
+        frame()
+        display.release()
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(LocalDisplayState.Phase.WAITING_DISPLAY, session.phase)
+        RuntimeEnvironment.getApplication().sendBroadcast(Intent(Intent.ACTION_SCREEN_OFF))
+        shadowOf(Looper.getMainLooper()).idle()
+        assertEquals(1, output.closeCalls)
+        complete()
+        reconnectDisplay()
+        assertNull(state.active)
+        assertEquals(0, output.attaches)
     }
     @Test fun taskRemovalHoldsGateUntilOwnedCleanupAndRejectsLateFrame() {
         frame()

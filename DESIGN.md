@@ -20,16 +20,55 @@ An explicit pending-cleanup marker survives service destruction/weak-host remova
 so a later Home Stop cannot release ownership ahead of render-thread completion.
 The service is not sticky and never restores saved consent.
 
-The service owns the existing Presentation but its window uses the visible
+The service owns the existing Presentation but its window uses the original
 Home Activity context. All Presentation/view/lifecycle work runs on main.
 Home stopping does not dismiss it. Back/destruction/recreation is explicitly
 terminal: stale Activity windows are not retained/reparented. Returning to the
-same Activity brings control back without a new consent/display. Creating a
-window still requires a resumed host; the foreground service does not grant
-overlay permissions. Platform window loss is terminal.
+same Activity brings control back without a new consent/display. Initial
+capture startup still requires a resumed host. Reconnecting a consented session
+may recreate the external Presentation using that same live, backgrounded host;
+it does not launch an Activity or request overlay permissions. Android/OEM
+window policies can still reject recreation. Platform window loss while the
+target remains connected is terminal.
 Only explicit Play registers that Activity as the host. Additional Home
 instances can explicitly Stop, but do not adopt an existing session or retire
 another owner's Presentation on Back/destruction.
+
+Automatic reconnect is opt-in and stored as one boolean in app-private
+preferences, defaulting off until enabled and retained until manually disabled.
+Each Play snapshots that setting; no session/consent is persisted or started by
+restoring it. Home instances observe shared changes and refresh on resume.
+A failed commit restores the previous effective preference before showing an
+error; unconfirmed disk rollback is also logged. A previously
+playing session enters `WAITING_DISPLAY` on target removal rather than retiring.
+The renderer detaches the existing virtual display's input surface and parks its
+EGL context on a 1x1 pbuffer, preserving projection, GL resources and the one
+capture virtual display. Reconnect rebuilds only the Presentation/EGL output
+surface and rebinds the original input. Phone geometry/lock checks continue.
+Frames acquired while detached are discarded rather than cached for presentation.
+Reconnect drains the paused capture before rebinding input, so pending or delayed
+old-image callbacks cannot restore pre-disconnect content; a fresh image is required.
+Resume is debounced until public logical target dimensions/orientation remain
+unchanged for five seconds. Removal, ambiguity or another resolution change
+cancels/restarts the timer; duplicate notifications do not prolong it. The timer
+rechecks live display geometry and resumes even with a backgrounded host once
+the quiet interval has elapsed. Normal surface resize handling still covers later
+changes; a quiet interval is a heuristic, not a platform negotiation-complete signal.
+Only a unique public name/flags match is accepted because public Android display
+IDs can change on reconnect and are not hardware identity. Identically named
+hardware cannot be authenticated by this mechanism; the UI option is off by
+default. Recreating an output requires the original live Home host, not its
+foreground visibility; finishing/destroyed or unrelated hosts are rejected.
+Old Presentation callbacks and startup watchdogs check window identity; paused
+frame/status reports cannot mark the session playing. Renderer progress/output-loss
+callbacks carry their originating output generation, checked again on main, so
+a stalled old swap cannot acknowledge or retire a replacement window.
+EGL bad-surface/native-window errors during output creation or binding clean up any
+partial surface and remain recoverable; invalidated attachment errors are ignored.
+Current output-loss errors notify main to check actual target removal; other
+rendering/EGL or cleanup errors remain terminal.
+Manual Stop, Back, host/task/service destruction, lock or projection
+revocation still retire the session, including while disconnected.
 
 Projection callbacks, virtual-display creation/resize/rebind/release, input
 surfaces/textures and EGL/GL operations are serialized on an owned HandlerThread.
